@@ -1,0 +1,27 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+def netcdfAllJar = providers.gradleProperty('netcdfAllJar')
+
+dependencies {
+    implementation('dev.zarr:zarr-java:0.1.3') {
+        exclude group: 'edu.ucar', module: 'cdm-core'
+    }
+    implementation files(netcdfAllJar.get())
+}
+
+application {
+    mainClass = 'scalafim.oracle.ZarrJavaOracle'
+}
+
+tasks.named('run') {
+    args(
+        providers.gradleProperty('oracleMode').get(),
+        providers.gradleProperty('oracleTarget').get()
+    )
+}
