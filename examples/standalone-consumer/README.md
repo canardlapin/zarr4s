@@ -14,3 +14,7 @@ sbt 'coreJVM/publishLocal' 'coreJS/publishLocal'
 cd examples/standalone-consumer
 sbt 'consumerJVM/compile' 'consumerJS/compile'
 ```
+
+The consumer derives the current git snapshot version used by sbt-typelevel.
+Pass `-Dzarr4s.version=<version>` to compile against another local or released
+version.
