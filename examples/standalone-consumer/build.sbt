@@ -9,9 +9,9 @@ lazy val consumer =
     .crossType(CrossType.Full)
     .in(file("."))
     .settings(
-      name := "scala-zarr-standalone-consumer",
+      name := "zarr4s-standalone-consumer",
       scalacOptions ++= Seq("-deprecation", "-feature", "-unchecked"),
-      libraryDependencies += "scalafim" %%% "scalafim-zarr" % "0.1.0-SNAPSHOT"
+      libraryDependencies += "io.github.canardlapin" %%% "zarr4s-core" % "0.1.0-SNAPSHOT"
     )
     .jsSettings(
       scalaJSLinkerConfig ~= (_.withModuleKind(ModuleKind.CommonJSModule))

@@ -2,7 +2,7 @@ package example
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
-import scalafim.zarr.*
+import zarr4s.*
 
 final case class IdentityCodec(configuration: JsonObject) extends CompiledCodec:
   val name = IdentityCodec.name

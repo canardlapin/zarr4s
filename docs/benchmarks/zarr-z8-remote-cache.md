@@ -2,14 +2,14 @@
 
 Date: 2026-07-22
 
-Executable gate: `FmriRemoteCacheSuite` plus `ObjectReadCacheSuite` on JVM and
+Executable gate: `RankFourRemoteCacheSuite` plus `ObjectReadCacheSuite` on JVM and
 Scala.js
 
 Status: passed in the focused Z8 run and the final repository-wide run
 
 ## Question
 
-Can the generic Zarr core reuse an fMRI-shaped partial read without another
+Can the generic Zarr core reuse an rank-four scientific partial read without another
 transport request, while keeping revision identity, memory bounds, and
 scheduling explicit?
 
@@ -84,9 +84,9 @@ therefore not claimed as current-v3 conformance.
 
 ## Final execution receipt
 
-The final focused run passed 139 `zarrJVM` tests and 147 `zarrJS` tests with no
+The final focused run passed 139 `coreJVM` tests and 147 `coreJS` tests with no
 failures. That includes the cache laws, single-flight and retry behavior,
-bounded scheduling, the fMRI-shaped reread, JVM HTTP and Scala.js Fetch traces,
+bounded scheduling, the rank-four scientific reread, JVM HTTP and Scala.js Fetch traces,
 the independent `zarrs` shard, the official `zarr_implementations` fixture, and
 the reciprocal zarr-java fixture. The subsequent repository-wide
 `compileAll testAll` run also passed.

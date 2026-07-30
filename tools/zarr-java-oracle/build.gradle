@@ -16,7 +16,7 @@ dependencies {
 }
 
 application {
-    mainClass = 'scalafim.oracle.ZarrJavaOracle'
+    mainClass = 'zarr4s.oracle.ZarrJavaOracle'
 }
 
 tasks.named('run') {

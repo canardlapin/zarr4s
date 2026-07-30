@@ -8,11 +8,11 @@ or general Scala.js writer**
 ## Question
 
 Can the Z6 codec seam support standards-conforming Blosc/Zstandard without
-making the dependency-free `scalafim-zarr` kernel depend on JNI, WebAssembly,
+making the dependency-free `zarr4s-core` kernel depend on JNI, WebAssembly,
 or npm?
 
 Yes. The experiment is implemented as the separate
-`scalafim-zarr-codec-blosc-zstd` cross-project. Its shared code compiles
+`zarr4s-codec-blosc-zstd` cross-project. Its shared code compiles
 normative Zarr v3 Blosc metadata into typed values and checks the 16-byte Blosc
 frame before any native or WebAssembly decoder can allocate. Platform code is
 only the algorithm interpreter:
@@ -47,11 +47,11 @@ float32 arrays through the real `JvmZarrWriter`; Zarr-Python reconstructs both
 exactly. The reproducible gate is:
 
 ```text
-npm ci --prefix modules/zarr-codec-blosc-zstd/js
+npm ci --prefix codec-blosc-zstd/js
 uv run --with 'zarr==3.2.1' --with numpy \
   python tools/verify_zarr_blosc_interop.py write-python <root>
-sbt 'zarrCodecBloscZstdJVM/Test/runMain \
-  scalafim.zarr.codec.blosc.BloscWriterFixtureMain <root>'
+sbt 'codecBloscZstdJVM/Test/runMain \
+  zarr4s.codec.blosc.BloscWriterFixtureMain <root>'
 uv run --with 'zarr==3.2.1' --with numpy \
   python tools/verify_zarr_blosc_interop.py verify-scala <root>
 ```
@@ -88,7 +88,7 @@ neuroimaging path:
 - direct and sharded representations use the same core planner and stores.
 
 Do not make it the default codec, promise a general Scala.js Blosc writer, or
-fold either dependency into `scalafim-zarr`. A full standalone `scala-zarr`
+fold either dependency into `zarr4s-core`. A full standalone `zarr4s`
 provider should either own a small conforming Blosc encoder or use a maintained
 browser binding that exposes `typesize`. Browser bundler execution is also
 still a release gate: this experiment ran the Scala.js suite under Node, not in

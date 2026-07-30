@@ -1,0 +1,11 @@
+.bsp/
+.bloop/
+.idea/
+.metals/
+.scala-build/
+.vscode/
+.mote/local/
+target/
+**/target/
+**/node_modules/
+.DS_Store

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bidirectional Zarr-Python 3.2.1 Blosc/Zstd gate for Scalafim."""
+"""Bidirectional Zarr-Python 3.2.1 Blosc/Zstd gate for zarr4s."""
 
 from __future__ import annotations
 

@@ -2,7 +2,10 @@
 
 This benchmark decides what NeuroArchive Zarr 0.1 promotes; it is not a claim
 that one layout is optimal for every neuroimaging operation. The reproducible
-driver is [`tools/benchmark_zarr_profiles.py`](../../tools/benchmark_zarr_profiles.py).
+driver remains in the
+[`canardlapin/scalafim`](https://github.com/canardlapin/scalafim/blob/main/tools/benchmark_zarr_profiles.py)
+repository because it measures a NeuroArchive workload rather than the generic
+library alone.
 
 ## Method
 

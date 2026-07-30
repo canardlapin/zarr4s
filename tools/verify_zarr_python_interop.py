@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bidirectional Zarr-Python 3.2.1 interoperability gate for scalafim-zarr."""
+"""Bidirectional Zarr-Python 3.2.1 interoperability gate for zarr4s-core."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def verify_scala(root: Path) -> None:
         expected = np.asarray(values, dtype=np.dtype(dtype)).reshape(2, 3)
         np.testing.assert_array_equal(np.asarray(written[:]), expected)
 
-    with tempfile.TemporaryDirectory(prefix="scalafim-zarr-corrupt-") as directory:
+    with tempfile.TemporaryDirectory(prefix="zarr4s-core-corrupt-") as directory:
         corrupt = Path(directory) / "rank5.zarr"
         shutil.copytree(rank_five_path, corrupt)
         payload = next(path for path in sorted(corrupt.rglob("*")) if path.is_file() and path.name != "zarr.json")
@@ -80,12 +80,12 @@ def verify_scala(root: Path) -> None:
         else:
             raise AssertionError("Zarr-Python accepted a corrupted CRC32C chunk")
 
-    with tempfile.TemporaryDirectory(prefix="scalafim-zarr-missing-codec-") as directory:
+    with tempfile.TemporaryDirectory(prefix="zarr4s-core-missing-codec-") as directory:
         missing = Path(directory) / "array.zarr"
         shutil.copytree(rank_five_path, missing)
         metadata_path = missing / "zarr.json"
         metadata = json.loads(metadata_path.read_text())
-        metadata["codecs"][1]["name"] = "org.scalafim.missing"
+        metadata["codecs"][1]["name"] = "io.github.canardlapin.zarr4s.missing"
         metadata_path.write_text(json.dumps(metadata, separators=(",", ":")))
         try:
             zarr.open_array(missing, mode="r")

@@ -43,7 +43,7 @@ def netcdf_all(cache_root: Path) -> Path:
 
     request = urllib.request.Request(
         NETCDF_ALL_URL,
-        headers={"User-Agent": "scalafim-zarr-java-oracle/1"},
+        headers={"User-Agent": "zarr4s-core-java-oracle/1"},
     )
     descriptor, temporary_name = tempfile.mkstemp(
         prefix="netcdfAll-",
@@ -70,13 +70,13 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "mode",
-        choices=("verify-python-shard", "verify-neuroarchive", "write-fixture"),
+        choices=("verify-python-shard", "write-fixture"),
     )
     parser.add_argument("target", type=Path)
     parser.add_argument(
         "--cache-root",
         type=Path,
-        default=Path(tempfile.gettempdir()) / "scalafim-zarr-java-oracle",
+        default=Path(tempfile.gettempdir()) / "zarr4s-java-oracle",
     )
     parser.add_argument("--java-home", type=Path)
     parser.add_argument("--gradle", default="gradle")

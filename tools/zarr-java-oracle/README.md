@@ -1,7 +1,7 @@
 # zarr-java interoperability oracle
 
 This is an opt-in, JVM-only differential oracle. It is deliberately outside
-the ScalaFIM module graph and is not a runtime backend for `scalafim-zarr`.
+the zarr4s module graph and is not a runtime backend for `zarr4s-core`.
 
 The Gradle project pins `dev.zarr:zarr-java` 0.1.3. That artifact's published
 POM obtains `edu.ucar:cdm-core` from the Unidata repository, so the oracle
@@ -24,14 +24,6 @@ JDK explicitly (17 through 24 for Gradle 8.14.3):
 ```sh
 python tools/verify_zarr_java_oracle.py \
   verify-python-shard /tmp/python-sharded.zarr \
-  --java-home /path/to/jdk-22
-```
-
-After the Scala extraction main has produced its five scalar revisions:
-
-```sh
-python tools/verify_zarr_java_oracle.py \
-  verify-neuroarchive /tmp/scalafim-zarr-outputs \
   --java-home /path/to/jdk-22
 ```
 

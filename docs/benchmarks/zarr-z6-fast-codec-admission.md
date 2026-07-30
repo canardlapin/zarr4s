@@ -4,7 +4,7 @@ Date: 2026-07-20
 
 Decision: **NoGo for 0.1; retain an external-provider research track**
 
-This decision applies to adding Zstandard or Blosc to `scalafim-zarr` 0.1. It
+This decision applies to adding Zstandard or Blosc to `zarr4s-core` 0.1. It
 does not reject those codecs. It rejects coupling the dependency-free kernel to
 an implementation before one provider passes the same JVM, Scala.js, bounded
 decode, corruption, deployment, and Python-oracle gates as gzip.
@@ -51,7 +51,7 @@ single cross-platform capability ready for admission.
 
 ## Next admission action
 
-Build a disposable `scala-zarr-codec-blosc-zstd` spike, outside the core, with:
+Build a disposable `zarr4s-codec-blosc-zstd` spike, outside the core, with:
 
 1. JVM encode/decode through a pinned Zstandard implementation;
 2. browser and Node encode/decode through one audited JS or WASM implementation;
