@@ -13,6 +13,9 @@ object HierarchyFixtures:
   val v2ArrayZlib: String =
     """{"zarr_format":2,"shape":[2,3],"chunks":[2,3],"dtype":"<i2","compressor":{"id":"zlib","level":1},"fill_value":0,"order":"C","filters":null}"""
 
+  val v2ArrayShuffle: String =
+    """{"zarr_format":2,"shape":[2,3],"chunks":[2,3],"dtype":"<i2","compressor":null,"fill_value":0,"order":"C","filters":[{"id":"shuffle","elementsize":2}]}"""
+
   val v2Group: String = """{"zarr_format":2}"""
 
   val v2Consolidated: String =

@@ -36,7 +36,8 @@ bounded v2 `.zmetadata` and v3 inline consolidated indexes; runtime ranks
 including zero; regular chunk grids; default and v2-compatible chunk keys;
 Boolean values; every signed and unsigned integer width from 8 through 64 bits;
 float32; float64; C and Fortran order through normative transpose;
-little/big-endian byte encoding; chunk-local gzip and Zarr v2 zlib; CRC32C; and start/end
+little/big-endian byte encoding; the common Zarr v2 shuffle filter; chunk-local gzip and
+Zarr v2 zlib; CRC32C; and start/end
 `sharding_indexed` reads and writes. Shared code provides deterministic
 create-only v3 array and group writers over synchronous or asynchronous object
 capabilities. The same shared `AsyncZarr` reader runs on the JVM and Scala.js;
@@ -135,9 +136,9 @@ the normative v3 specification.
 It intentionally does not own scientific-domain profiles, mutation, v2
 writing, S3 credentials, persistent caches, prefetch or retention policy,
 Blosc itself, or every extension. Float16, complex, raw-width,
-variable-length, structured values, v2 object arrays, and v2 filter pipelines
-are not yet claimed. Unsupported metadata crosses a typed error boundary
-instead of being guessed at.
+variable-length, structured values, v2 object arrays, and v2 filters beyond
+shuffle are not yet claimed. Unsupported metadata crosses a typed error
+boundary instead of being guessed at.
 
 The core has no production library dependency. Its runtime-rank values,
 immutable descriptors, pure planners, explicit codec and store capabilities,
@@ -162,10 +163,9 @@ kernel its identifier. Array-to-array codecs expose explicit shape laws, so
 transpose composes with bytes and compression at arbitrary rank on both
 platforms.
 
-The first production-shaped experiment using that seam lives in the optional
-`zarr-codec-blosc-zstd` module. It leaves this kernel dependency-free while
-testing a JNI implementation on the JVM and an embedded-WASM implementation on
-Scala.js.
+The optional `zarr4s-codec-blosc-zstd` module extends that seam with Blosc/Zstd
+and standalone Zstandard codecs. It leaves this kernel dependency-free while
+testing native JVM and pure-JavaScript implementations on Scala.js.
 
 The executable architecture and extraction gates are recorded in
 [`docs/plans/zarr-z6-codec-architecture.md`](docs/plans/zarr-z6-codec-architecture.md).

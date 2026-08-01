@@ -66,11 +66,14 @@ class BloscZstdMetadataSuite extends munit.FunSuite:
     )
     assert(missingTypeSize.left.exists(_.contains("typesize is required")))
 
-  test("provider adds one capability without changing the core"):
+  test("provider adds optional codecs without changing the core"):
     assertEquals(ZarrCapabilities().codec("blosc"), None)
+    assertEquals(ZarrCapabilities().codec("zstd"), None)
     val extended = BloscZstdProvider.capabilities()
     assertEquals(extended.codec("blosc"), Some(BloscZstdCapability))
+    assertEquals(extended.codec("zstd"), Some(ZstdCapability))
     assertEquals(extended.codecs.count(_.name == "blosc"), 1)
+    assertEquals(extended.codecs.count(_.name == "zstd"), 1)
 
   private def extension(fields: (String, JsonValue)*): ExtensionMetadata =
     ExtensionMetadata(

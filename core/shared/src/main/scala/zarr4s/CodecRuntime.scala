@@ -212,13 +212,16 @@ object SyncCodecRuntime:
     CodecRuntimeValidation
       .executorIndex(
         platform,
-        SyncCrc32cExecutor +: executors.toVector,
+        SyncShuffleExecutor +: SyncCrc32cExecutor +: executors.toVector,
         _.name
       )
       .map(new SyncCodecRuntime(platform, _))
 
   val core: SyncCodecRuntime =
-    new SyncCodecRuntime("synchronous runtime", Map("crc32c" -> SyncCrc32cExecutor))
+    new SyncCodecRuntime(
+      "synchronous runtime",
+      Map("crc32c" -> SyncCrc32cExecutor, "shuffle" -> SyncShuffleExecutor)
+    )
 
   private[zarr4s] def unsafe(
       platform: String,
@@ -447,13 +450,16 @@ object AsyncCodecRuntime:
     CodecRuntimeValidation
       .executorIndex(
         platform,
-        AsyncCrc32cExecutor +: executors.toVector,
+        AsyncShuffleExecutor +: AsyncCrc32cExecutor +: executors.toVector,
         _.name
       )
       .map(new AsyncCodecRuntime(platform, _))
 
   val core: AsyncCodecRuntime =
-    new AsyncCodecRuntime("asynchronous runtime", Map("crc32c" -> AsyncCrc32cExecutor))
+    new AsyncCodecRuntime(
+      "asynchronous runtime",
+      Map("crc32c" -> AsyncCrc32cExecutor, "shuffle" -> AsyncShuffleExecutor)
+    )
 
   private[zarr4s] def unsafe(
       platform: String,
@@ -588,3 +594,50 @@ private object AsyncCrc32cExecutor extends AsyncByteCodecExecutor:
       decoded: OwnedBytes
   )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] =
     Future.successful(Right(Crc32c.append(decoded)))
+
+private object SyncShuffleExecutor extends SyncByteCodecExecutor:
+  val name = "shuffle"
+
+  def decode(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      expectedDecoded: ByteCount,
+      limits: DecodeLimits
+  ): Either[CodecError, OwnedBytes] = codec match
+    case found: ShuffleCodec => Shuffle.decode(encoded, expectedDecoded, limits, found.elementSize)
+    case found               =>
+      Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+
+  def encode(
+      codec: CompiledCodec,
+      decoded: OwnedBytes
+  ): Either[CodecError, OwnedBytes] = codec match
+    case found: ShuffleCodec => Shuffle.encode(decoded, found.elementSize)
+    case found               =>
+      Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+
+private object AsyncShuffleExecutor extends AsyncByteCodecExecutor:
+  val name = "shuffle"
+
+  def decode(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      expectedDecoded: ByteCount,
+      limits: DecodeLimits
+  )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] = codec match
+    case found: ShuffleCodec =>
+      Future.successful(Shuffle.decode(encoded, expectedDecoded, limits, found.elementSize))
+    case found =>
+      Future.successful(
+        Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+      )
+
+  def encode(
+      codec: CompiledCodec,
+      decoded: OwnedBytes
+  )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] = codec match
+    case found: ShuffleCodec => Future.successful(Shuffle.encode(decoded, found.elementSize))
+    case found               =>
+      Future.successful(
+        Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+      )

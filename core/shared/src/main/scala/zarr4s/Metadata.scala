@@ -176,6 +176,16 @@ final case class ZlibCodec(level: Int) extends CompiledCodec:
     )
   )
 
+final case class ShuffleCodec(elementSize: Int) extends CompiledCodec:
+  val name = "shuffle"
+  val input = CodecRepresentation.Bytes
+  val output = CodecRepresentation.Bytes
+  val configuration: JsonObject = JsonObject.unsafe(
+    Vector(
+      "elementsize" -> JsonValue.Num(JsonNumber.unsafe(elementSize.toString))
+    )
+  )
+
 case object Crc32cCodec extends CompiledCodec:
   val name = "crc32c"
   val input = CodecRepresentation.Bytes
@@ -239,6 +249,18 @@ object BuiltInCodecs:
         if level < -1L || level > 9L then Left(s"zlib level must be in [-1, 9], found $level")
         else Right(ZlibCodec(level.toInt))
 
+  val shuffle: CodecCapability = new CodecCapability:
+    val name = "shuffle"
+
+    def compile(
+        extension: ExtensionMetadata,
+        dataType: DataTypeCapability
+    ): Either[String, CompiledCodec] =
+      requiredLong(extension.configuration, "elementsize").flatMap: elementSize =>
+        if elementSize < 1L || elementSize > Int.MaxValue.toLong then
+          Left(s"shuffle elementsize must be in [1, ${Int.MaxValue}], found $elementSize")
+        else Right(ShuffleCodec(elementSize.toInt))
+
   val crc32c: CodecCapability = new CodecCapability:
     val name = "crc32c"
 
@@ -247,7 +269,7 @@ object BuiltInCodecs:
         dataType: DataTypeCapability
     ): Either[String, CompiledCodec] = Right(Crc32cCodec)
 
-  val all: Vector[CodecCapability] = Vector(transpose, bytes, gzip, zlib, crc32c)
+  val all: Vector[CodecCapability] = Vector(transpose, bytes, gzip, zlib, shuffle, crc32c)
 
   private def requiredOrder(objectValue: JsonObject, field: String): Either[String, Vector[Int]] =
     objectValue.get(field) match

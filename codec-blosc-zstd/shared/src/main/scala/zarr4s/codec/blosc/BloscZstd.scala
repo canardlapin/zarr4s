@@ -139,7 +139,8 @@ object BloscZstdCapability extends CodecCapability:
 object BloscZstdProvider:
   def capabilities(base: ZarrCapabilities = ZarrCapabilities()): ZarrCapabilities =
     base.copy(codecs =
-      base.codecs.filterNot(_.name == BloscZstdCapability.name) :+ BloscZstdCapability
+      base.codecs.filterNot(capability => Set("blosc", "zstd").contains(capability.name)) ++
+        Vector(BloscZstdCapability, ZstdCapability)
     )
 
 private[blosc] object BloscFrame:

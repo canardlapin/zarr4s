@@ -65,6 +65,7 @@ class BrowserBloscZstdSuite extends munit.FunSuite:
     assert(!BrowserCodecRuntime.portable.executorNames.contains("blosc"))
     assert(BrowserBloscZstdRuntime.portable.executorNames.contains("blosc"))
     assert(BrowserBloscZstdRuntime.portable.executorNames.contains("gzip"))
+    assert(BrowserBloscZstdRuntime.portable.executorNames.contains("zstd"))
 
   test("Scala.js reads direct and indexed-shard objects emitted by Zarr-Python"):
     for

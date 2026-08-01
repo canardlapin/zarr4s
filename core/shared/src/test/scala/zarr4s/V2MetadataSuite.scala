@@ -72,7 +72,7 @@ class V2MetadataSuite extends munit.FunSuite:
       Some(Vector(4, 3, 2, 1, 0))
     )
 
-  test("v2 zlib is executable while unsupported metadata refuses explicitly"):
+  test("v2 zlib and shuffle are executable while unsupported metadata refuses explicitly"):
     assert(V2Metadata.parseArray(cOrder.replace("\"<i2\"", "[[\"x\",\"<i2\"]]"), None).isLeft)
     val zlib = descriptor(
       metadata(
@@ -83,6 +83,19 @@ class V2MetadataSuite extends munit.FunSuite:
       )
     )
     assertEquals(codecs(zlib).map(_.name), Vector("bytes", "zlib"))
+    val shuffle = descriptor(
+      metadata(
+        cOrder.replace(
+          "\"filters\":null",
+          "\"filters\":[{\"id\":\"shuffle\",\"elementsize\":2}]"
+        )
+      )
+    )
+    assertEquals(codecs(shuffle).map(_.name), Vector("bytes", "shuffle"))
+    assertEquals(
+      codecs(shuffle).collectFirst { case value: ShuffleCodec => value.elementSize },
+      Some(2)
+    )
     assert(
       V2ArrayDescriptor
         .compile(

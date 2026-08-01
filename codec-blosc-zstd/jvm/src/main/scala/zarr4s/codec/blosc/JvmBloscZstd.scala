@@ -72,7 +72,7 @@ object JvmBloscZstd extends SyncByteCodecExecutor:
 object JvmBloscZstdRuntime:
   val portable: SyncCodecRuntime = SyncCodecRuntime(
     "JVM with Blosc/Zstd",
-    Vector(JvmGzip, JvmZlib, JvmBloscZstd)
+    Vector(JvmGzip, JvmZlib, JvmZstd, JvmBloscZstd)
   ) match
     case Right(found) => found
     case Left(error)  => throw new IllegalStateException(error.message)

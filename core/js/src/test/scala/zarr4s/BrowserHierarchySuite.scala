@@ -82,6 +82,24 @@ class BrowserHierarchySuite extends munit.FunSuite:
                 assertEquals(shorts(result), Vector[Short](1, -2, 300, 4, 5, -6))
     else Future.successful(())
 
+  test("browser opens a v2 shuffle-filtered array"):
+    val store = zvalue(
+      AsyncMemoryStore(
+        Map(
+          ".zarray" -> HierarchyFixtures.bytes(HierarchyFixtures.v2ArrayShuffle),
+          "0.0" -> ZarrBinaryFixtures.directShuffledChunk
+        )
+      )
+    )
+    BrowserZarr
+      .openArray(store)
+      .flatMap:
+        case Left(error)   => fail(error.message)
+        case Right(opened) =>
+          full(opened).map:
+            case Left(error)   => fail(error.message)
+            case Right(result) => assertEquals(shorts(result), Vector[Short](1, -2, 300, 4, 5, -6))
+
   test("browser hierarchy uses v3 inline consolidation without child metadata reads"):
     val store = zvalue(
       AsyncMemoryStore(

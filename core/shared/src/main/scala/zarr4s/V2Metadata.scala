@@ -229,8 +229,8 @@ object V2ArrayDescriptor:
   ): Either[ZarrError, ArrayDescriptor] =
     for
       dtype <- parseDType(metadata.dtype)
-      _ <- rejectFilters(metadata.filters)
-      codecs <- codecs(metadata, dtype)
+      filterCodecs <- filterCodecs(metadata.filters)
+      codecs <- codecs(metadata, dtype, filterCodecs)
       chunkGrid <- extension(
         "regular",
         Vector(
@@ -292,20 +292,37 @@ object V2ArrayDescriptor:
         case Some(found) if byteOrder == '>' => Right(DType(found, Some(Endianness.Big), width))
         case Some(_)                         => unsupported(value)
 
-  private def rejectFilters(filters: Vector[JsonObject]): Either[ZarrError, Unit] =
-    filters.headOption match
-      case None         => Right(())
-      case Some(filter) =>
-        Left(
-          ZarrError.UnsupportedExtension(
-            "v2 filter",
-            identifier(filter).getOrElse("<missing id>")
+  private def filterCodecs(
+      filters: Vector[JsonObject]
+  ): Either[ZarrError, Vector[ExtensionMetadata]] =
+    val result = Vector.newBuilder[ExtensionMetadata]
+    var index = 0
+    while index < filters.length do
+      val filter = filters(index)
+      identifier(filter) match
+        case None =>
+          return Left(
+            ZarrError.InvalidMetadata(
+              s"$$.zarray.filters[$index].id",
+              "missing string field"
+            )
           )
-        )
+        case Some("shuffle") =>
+          result += ExtensionMetadata(
+            "shuffle",
+            filter.removed(Set("id")),
+            true,
+            JsonObject.empty
+          )
+        case Some(found) =>
+          return Left(ZarrError.UnsupportedExtension("v2 filter", found))
+      index += 1
+    Right(result.result())
 
   private def codecs(
       metadata: V2ArrayMetadata,
-      dtype: DType
+      dtype: DType,
+      filterCodecs: Vector[ExtensionMetadata]
   ): Either[ZarrError, Vector[ExtensionMetadata]] =
     val result = Vector.newBuilder[ExtensionMetadata]
     if metadata.order == V2MemoryOrder.F then
@@ -332,6 +349,7 @@ object V2ArrayDescriptor:
           )
         )
     result += ExtensionMetadata("bytes", bytesConfiguration, true, JsonObject.empty)
+    filterCodecs.foreach(result += _)
     metadata.compressor match
       case None             => Right(result.result())
       case Some(compressor) =>
@@ -357,6 +375,15 @@ object V2ArrayDescriptor:
       Right(
         ExtensionMetadata(
           "zlib",
+          compressor.removed(Set("id")),
+          true,
+          JsonObject.empty
+        )
+      )
+    case Some("zstd") =>
+      Right(
+        ExtensionMetadata(
+          "zstd",
           compressor.removed(Set("id")),
           true,
           JsonObject.empty

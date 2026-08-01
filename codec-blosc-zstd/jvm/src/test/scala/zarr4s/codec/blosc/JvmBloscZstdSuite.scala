@@ -64,6 +64,7 @@ class JvmBloscZstdSuite extends munit.FunSuite:
     assert(!JvmCodecRuntime.portable.executorNames.contains("blosc"))
     assert(JvmBloscZstdRuntime.portable.executorNames.contains("blosc"))
     assert(JvmBloscZstdRuntime.portable.executorNames.contains("gzip"))
+    assert(JvmBloscZstdRuntime.portable.executorNames.contains("zstd"))
 
   test("JVM reads direct and indexed-shard objects emitted by Zarr-Python"):
     assertEquals(readAll(BloscPythonFixtures.directObjects), BloscPythonFixtures.directValues)

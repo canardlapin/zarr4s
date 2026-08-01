@@ -81,5 +81,5 @@ class CodecRuntimeSuite extends munit.FunSuite:
 
   test("runtime requirements are derived from the compiled program"):
     val runtime = zvalue(SyncCodecRuntime("test", Vector(SyncIdentity("gzip"))))
-    assertEquals(runtime.executorNames, Vector("crc32c", "gzip"))
+    assertEquals(runtime.executorNames, Vector("crc32c", "gzip", "shuffle"))
     assertEquals(runtime.validate(gzipProgram), Right(()))

@@ -14,6 +14,9 @@ object ZarrBinaryFixtures:
     "78016364f8f75f8791858195e1d77f001781042e"
   )
 
+  /** Six little-endian int16 values transformed by numcodecs Shuffle(elementsize=2). */
+  val directShuffledChunk: OwnedBytes = hex("01fe2c0405fa00ff010000ff")
+
   val directDecodedChunk: OwnedBytes = hex("0100feff2c0104000500faff")
 
   val shardedStartMetadata =

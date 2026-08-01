@@ -62,7 +62,10 @@ lazy val codecBloscZstd =
       name := "zarr4s-codec-blosc-zstd"
     )
     .jvmSettings(
-      libraryDependencies += "com.scalableminds" % "blosc-java" % "0.3-1.21.6"
+      libraryDependencies ++= Seq(
+        "com.scalableminds" % "blosc-java" % "0.3-1.21.6",
+        "com.github.luben" % "zstd-jni" % "1.5.7-11"
+      )
     )
     .jsSettings(jsSettingsBase)
     .jsSettings(
