@@ -36,18 +36,18 @@ bounded v2 `.zmetadata` and v3 inline consolidated indexes; runtime ranks
 including zero; regular chunk grids; default and v2-compatible chunk keys;
 Boolean values; every signed and unsigned integer width from 8 through 64 bits;
 float32; float64; C and Fortran order through normative transpose;
-little/big-endian byte encoding; chunk-local gzip; CRC32C; and start/end
+little/big-endian byte encoding; chunk-local gzip and Zarr v2 zlib; CRC32C; and start/end
 `sharding_indexed` reads and writes. Shared code provides deterministic
 create-only v3 array and group writers over synchronous or asynchronous object
 capabilities. The same shared `AsyncZarr` reader runs on the JVM and Scala.js;
-`BrowserZarr` remains a source-compatible facade that selects browser gzip by
-default. JVM adds confined filesystem and checked HTTP range stores, an
+`BrowserZarr` remains a source-compatible facade that selects browser gzip and
+zlib by default. JVM adds confined filesystem and checked HTTP range stores, an
 explicit blocking-reader adapter whose blocking execution context is supplied
 at construction, and atomic staged-directory publication.
 An explicit blocking-codec adapter similarly lets portable async interpreters
 use a synchronous JVM codec only on a caller-supplied dedicated execution
 context; blocking work is never smuggled onto the callback context.
-Scala.js adds Fetch range reads and browser gzip; a caller-supplied
+Scala.js adds Fetch range reads and browser gzip/zlib; a caller-supplied
 `AsyncObjectWriter` provides the write transport without a cloud SDK in core.
 
 Selections are runtime-rank and factored by axis. `All`, positive-step `Slice`,
@@ -121,7 +121,7 @@ cleaning a private stage and atomically moving the completed directory.
 Every written object and the metadata marker carry a portable SHA-256 identity
 in `WriteReceipt`. The same interpreter handles scalar, empty, and arbitrary
 rank arrays, all built-in fixed-width carriers, transpose, default and v2 chunk
-keys, CRC32C, platform gzip, optional byte-codec providers, and start/end
+keys, CRC32C, platform gzip/zlib, optional byte-codec providers, and start/end
 indexed sharding. It deliberately provides no overwrite, resize, append, or
 concurrent-mutation operation.
 

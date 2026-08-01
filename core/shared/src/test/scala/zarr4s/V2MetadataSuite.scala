@@ -72,8 +72,17 @@ class V2MetadataSuite extends munit.FunSuite:
       Some(Vector(4, 3, 2, 1, 0))
     )
 
-  test("unsupported v2 dtype, filters, compressor, and undefined fill refuse explicitly"):
+  test("v2 zlib is executable while unsupported metadata refuses explicitly"):
     assert(V2Metadata.parseArray(cOrder.replace("\"<i2\"", "[[\"x\",\"<i2\"]]"), None).isLeft)
+    val zlib = descriptor(
+      metadata(
+        cOrder.replace(
+          "\"compressor\":null",
+          "\"compressor\":{\"id\":\"zlib\",\"level\":1}"
+        )
+      )
+    )
+    assertEquals(codecs(zlib).map(_.name), Vector("bytes", "zlib"))
     assert(
       V2ArrayDescriptor
         .compile(
@@ -92,7 +101,7 @@ class V2MetadataSuite extends munit.FunSuite:
           metadata(
             cOrder.replace(
               "\"compressor\":null",
-              "\"compressor\":{\"id\":\"zlib\",\"level\":1}"
+              "\"compressor\":{\"id\":\"not-a-codec\",\"level\":1}"
             )
           )
         )

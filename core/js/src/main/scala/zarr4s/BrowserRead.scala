@@ -11,7 +11,7 @@ type BrowserOpenedNode = AsyncOpenedNode
 object BrowserOpenedNode:
   export AsyncOpenedNode.*
 
-/** Browser-oriented facade that adds the browser gzip executor by default.
+/** Browser-oriented facade that adds the browser gzip and zlib executors by default.
   *
   * The reader implementation itself is portable and lives in [[AsyncZarr]].
   */

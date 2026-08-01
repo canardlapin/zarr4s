@@ -42,9 +42,7 @@ object BrowserGzip extends AsyncByteCodecExecutor:
         )
       )
 
-  def available: Boolean =
-    !js.isUndefined(js.Dynamic.global.DecompressionStream) &&
-      !js.isUndefined(js.Dynamic.global.CompressionStream)
+  def available: Boolean = BrowserCompressionStreams.available("gzip")
 
   def decode(
       encoded: OwnedBytes,
@@ -61,24 +59,34 @@ object BrowserGzip extends AsyncByteCodecExecutor:
         )
       )
     else
-      transform("DecompressionStream", encoded).map:
-        case Left(error)    => Left(error)
-        case Right(decoded) => DecodedLength.validate(decoded, expectedDecoded, limits)
+      BrowserCompressionStreams
+        .transform("gzip", "gzip", "DecompressionStream", encoded)
+        .map:
+          case Left(error)    => Left(error)
+          case Right(decoded) => DecodedLength.validate(decoded, expectedDecoded, limits)
 
   def encode(
       decoded: OwnedBytes
   )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] =
-    transform("CompressionStream", decoded)
+    BrowserCompressionStreams.transform("gzip", "gzip", "CompressionStream", decoded)
 
-  private def transform(
+private[zarr4s] object BrowserCompressionStreams:
+  def available(format: String): Boolean =
+    (format == "gzip" || format == "deflate") &&
+      !js.isUndefined(js.Dynamic.global.DecompressionStream) &&
+      !js.isUndefined(js.Dynamic.global.CompressionStream)
+
+  def transform(
+      codecName: String,
+      format: String,
       constructorName: String,
       input: OwnedBytes
   )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] =
     val constructor =
       if constructorName == "DecompressionStream" then js.Dynamic.global.DecompressionStream
       else js.Dynamic.global.CompressionStream
-    if js.isUndefined(constructor) then
-      Future.successful(Left(CodecError.UnsupportedCapability("gzip", "browser")))
+    if !available(format) then
+      Future.successful(Left(CodecError.UnsupportedCapability(codecName, "browser")))
     else
       try
         val source = new Uint8Array(input.length)
@@ -88,7 +96,7 @@ object BrowserGzip extends AsyncByteCodecExecutor:
           index += 1
         val blobParts = js.Array(source.buffer)
         val blob = js.Dynamic.newInstance(js.Dynamic.global.Blob)(blobParts)
-        val codec = js.Dynamic.newInstance(constructor)("gzip")
+        val codec = js.Dynamic.newInstance(constructor)(format)
         val stream = blob.stream().pipeThrough(codec)
         val response = js.Dynamic.newInstance(js.Dynamic.global.Response)(stream)
         val promise = response.arrayBuffer().asInstanceOf[js.Promise[ArrayBuffer]]
@@ -102,11 +110,11 @@ object BrowserGzip extends AsyncByteCodecExecutor:
               outputIndex += 1
             Right(OwnedBytes.unsafe(output))
           .recover:
-            case NonFatal(error) => Left(CodecError.CorruptData("gzip", error.getMessage))
+            case NonFatal(error) => Left(CodecError.CorruptData(codecName, error.getMessage))
       catch
         case NonFatal(error) =>
-          Future.successful(Left(CodecError.CorruptData("gzip", error.getMessage)))
+          Future.successful(Left(CodecError.CorruptData(codecName, error.getMessage)))
 
 object BrowserCodecRuntime:
   val portable: AsyncCodecRuntime =
-    AsyncCodecRuntime.unsafe("browser", Vector(BrowserGzip))
+    AsyncCodecRuntime.unsafe("browser", Vector(BrowserGzip, BrowserZlib))

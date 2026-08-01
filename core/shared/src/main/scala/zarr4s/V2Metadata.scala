@@ -353,6 +353,15 @@ object V2ArrayDescriptor:
           JsonObject.empty
         )
       )
+    case Some("zlib") =>
+      Right(
+        ExtensionMetadata(
+          "zlib",
+          compressor.removed(Set("id")),
+          true,
+          JsonObject.empty
+        )
+      )
     case Some("crc32c") =>
       Right(ExtensionMetadata("crc32c", JsonObject.empty, true, JsonObject.empty))
     case Some("blosc") => translateBlosc(compressor, dtype)

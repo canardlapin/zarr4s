@@ -9,6 +9,11 @@ object ZarrBinaryFixtures:
     "1f8b08005c125e6a04ff6364f8f75f8791858195e1d77f0052120ac00c000000"
   )
 
+  /** Six little-endian int16 values compressed by Python zlib at level 1. */
+  val directZlibChunk: OwnedBytes = hex(
+    "78016364f8f75f8791858195e1d77f001781042e"
+  )
+
   val directDecodedChunk: OwnedBytes = hex("0100feff2c0104000500faff")
 
   val shardedStartMetadata =

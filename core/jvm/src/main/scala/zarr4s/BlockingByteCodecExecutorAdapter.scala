@@ -32,10 +32,13 @@ object BlockingByteCodecExecutorAdapter:
       )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] =
         Future(executor.encode(codec, decoded))(using blockingExecutionContext)
 
-/** JVM gzip runtime for [[AsyncZarr]] and other portable async interpreters. */
+/** JVM compression runtime for [[AsyncZarr]] and other portable async interpreters. */
 object JvmAsyncCodecRuntime:
   def portable(blockingExecutionContext: ExecutionContext): AsyncCodecRuntime =
     AsyncCodecRuntime.unsafe(
       "JVM asynchronous runtime",
-      Vector(BlockingByteCodecExecutorAdapter(JvmGzip, blockingExecutionContext))
+      Vector(
+        BlockingByteCodecExecutorAdapter(JvmGzip, blockingExecutionContext),
+        BlockingByteCodecExecutorAdapter(JvmZlib, blockingExecutionContext)
+      )
     )

@@ -128,7 +128,7 @@ private trait NumcodecsBloscCodec extends js.Object:
 object BrowserBloscZstdRuntime:
   val portable: AsyncCodecRuntime = AsyncCodecRuntime(
     "Scala.js with Blosc/Zstd",
-    Vector(BrowserGzip, BrowserBloscZstd)
+    Vector(BrowserGzip, BrowserZlib, BrowserBloscZstd)
   ) match
     case Right(found) => found
     case Left(error)  => throw new IllegalStateException(error.message)

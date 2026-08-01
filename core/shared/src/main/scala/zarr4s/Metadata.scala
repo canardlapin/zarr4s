@@ -166,6 +166,16 @@ final case class GzipCodec(level: Int) extends CompiledCodec:
     )
   )
 
+final case class ZlibCodec(level: Int) extends CompiledCodec:
+  val name = "zlib"
+  val input = CodecRepresentation.Bytes
+  val output = CodecRepresentation.Bytes
+  val configuration: JsonObject = JsonObject.unsafe(
+    Vector(
+      "level" -> JsonValue.Num(JsonNumber.unsafe(level.toString))
+    )
+  )
+
 case object Crc32cCodec extends CompiledCodec:
   val name = "crc32c"
   val input = CodecRepresentation.Bytes
@@ -218,6 +228,17 @@ object BuiltInCodecs:
         if level < 0L || level > 9L then Left(s"gzip level must be in [0, 9], found $level")
         else Right(GzipCodec(level.toInt))
 
+  val zlib: CodecCapability = new CodecCapability:
+    val name = "zlib"
+
+    def compile(
+        extension: ExtensionMetadata,
+        dataType: DataTypeCapability
+    ): Either[String, CompiledCodec] =
+      requiredLong(extension.configuration, "level").flatMap: level =>
+        if level < -1L || level > 9L then Left(s"zlib level must be in [-1, 9], found $level")
+        else Right(ZlibCodec(level.toInt))
+
   val crc32c: CodecCapability = new CodecCapability:
     val name = "crc32c"
 
@@ -226,7 +247,7 @@ object BuiltInCodecs:
         dataType: DataTypeCapability
     ): Either[String, CompiledCodec] = Right(Crc32cCodec)
 
-  val all: Vector[CodecCapability] = Vector(transpose, bytes, gzip, crc32c)
+  val all: Vector[CodecCapability] = Vector(transpose, bytes, gzip, zlib, crc32c)
 
   private def requiredOrder(objectValue: JsonObject, field: String): Either[String, Vector[Int]] =
     objectValue.get(field) match

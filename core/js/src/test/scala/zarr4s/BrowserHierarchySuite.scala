@@ -1,6 +1,7 @@
 package zarr4s
 
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
 
 class BrowserHierarchySuite extends munit.FunSuite:
   private def zvalue[A](result: Either[ZarrError, A]): A = result match
@@ -59,6 +60,27 @@ class BrowserHierarchySuite extends munit.FunSuite:
             case Left(error)   => fail(error.message)
             case Right(result) =>
               assertEquals(shorts(result), Vector[Short](1, -2, 300, 4, 5, -6))
+
+  test("browser opens a common v2 zlib array"):
+    if BrowserZlib.available then
+      val store = zvalue(
+        AsyncMemoryStore(
+          Map(
+            ".zarray" -> HierarchyFixtures.bytes(HierarchyFixtures.v2ArrayZlib),
+            "0.0" -> ZarrBinaryFixtures.directZlibChunk
+          )
+        )
+      )
+      BrowserZarr
+        .openArray(store)
+        .flatMap:
+          case Left(error)   => fail(error.message)
+          case Right(opened) =>
+            full(opened).map:
+              case Left(error)   => fail(error.message)
+              case Right(result) =>
+                assertEquals(shorts(result), Vector[Short](1, -2, 300, 4, 5, -6))
+    else Future.successful(())
 
   test("browser hierarchy uses v3 inline consolidation without child metadata reads"):
     val store = zvalue(

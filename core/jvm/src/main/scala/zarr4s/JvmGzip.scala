@@ -95,4 +95,4 @@ object JvmGzip extends SyncByteCodecExecutor:
 
 object JvmCodecRuntime:
   val portable: SyncCodecRuntime =
-    SyncCodecRuntime.unsafe("JVM", Vector(JvmGzip))
+    SyncCodecRuntime.unsafe("JVM", Vector(JvmGzip, JvmZlib))
