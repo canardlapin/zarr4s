@@ -126,32 +126,30 @@ final class ShardIndexProgram private (
     ShardIndexCodec
       .rawEncodedLength(innerGridShape, limits)
       .flatMap: raw =>
-        var length = raw.toLong
-        var index = 0
-        val stages = codecs.stages
-        while index < stages.length do
-          stages(index) match
-            case _: BytesCodec             => ()
-            case ShuffleCodec(elementSize) =>
-              if elementSize < 1 || length % elementSize.toLong != 0L then
-                return Left(
-                  ZarrError.InvalidMetadata(
-                    "$.codecs[0].configuration.index_codecs",
-                    s"shuffle elementsize $elementSize does not divide index length $length"
-                  )
-                )
-            case Crc32cCodec =>
-              LongArrays.checkedAdd(length, 4L, "shard index byte length") match
-                case Left(error)  => return Left(error)
-                case Right(found) => length = found
-            case stage =>
-              return Left(
-                ZarrError.UnsupportedExtension("shard index codec pipeline", stage.name)
+        codecs.stages
+          .foldLeft[Either[ZarrError, Long]](Right(raw.toLong)): (result, stage) =>
+            result.flatMap: length =>
+              stage match
+                case _: BytesCodec             => Right(length)
+                case ShuffleCodec(elementSize) =>
+                  if elementSize < 1 || length % elementSize.toLong != 0L then
+                    Left(
+                      ZarrError.InvalidMetadata(
+                        "$.codecs[0].configuration.index_codecs",
+                        s"shuffle elementsize $elementSize does not divide index length $length"
+                      )
+                    )
+                  else Right(length)
+                case Crc32cCodec =>
+                  LongArrays.checkedAdd(length, 4L, "shard index byte length")
+                case stage =>
+                  Left(ZarrError.UnsupportedExtension("shard index codec pipeline", stage.name))
+          .flatMap: length =>
+            if length > limits.maxIndexBytes.toLong then
+              Left(
+                ZarrError.ResourceLimit("shard index bytes", limits.maxIndexBytes.toLong, length)
               )
-          index += 1
-        if length > limits.maxIndexBytes.toLong then
-          Left(ZarrError.ResourceLimit("shard index bytes", limits.maxIndexBytes.toLong, length))
-        else ByteCount(length)
+            else ByteCount(length)
 
   private[zarr4s] def rawLength(
       innerGridShape: Shape,

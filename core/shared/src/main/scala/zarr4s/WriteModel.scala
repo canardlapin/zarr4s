@@ -46,11 +46,13 @@ object ChunkProvider:
         new DenseChunkProvider(descriptor, source, data.shape, chunkShape)
 
   /** A provider that emits fill for every requested chunk. */
-  def fill(descriptor: ArrayDescriptor): ChunkProvider = new ChunkProvider:
-    def chunk(
-        _coordinate: ChunkCoordinate,
-        _storedShape: Shape
-    ): Either[ZarrError, ChunkPayload] = Right(ChunkPayload.Fill)
+  def fill(descriptor: ArrayDescriptor): ChunkProvider =
+    val _ = descriptor
+    new ChunkProvider:
+      def chunk(
+          _coordinate: ChunkCoordinate,
+          _storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] = Right(ChunkPayload.Fill)
 
   private[zarr4s] def logicalGrid(descriptor: ArrayDescriptor): RegularGrid =
     descriptor.layout match

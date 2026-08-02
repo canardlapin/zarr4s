@@ -25,6 +25,7 @@ trait SyncByteCodecExecutor:
       encoded: OwnedBytes,
       limits: DecodeLimits
   ): Either[CodecError, OwnedBytes] =
+    val _ = (codec, encoded, limits)
     Left(CodecError.CorruptData(name, "decoder requires an expected decoded length"))
 
   def encode(
@@ -48,6 +49,7 @@ trait AsyncByteCodecExecutor:
       encoded: OwnedBytes,
       limits: DecodeLimits
   )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] =
+    val _ = (codec, encoded, limits, summon[ExecutionContext])
     Future.successful(
       Left(CodecError.CorruptData(name, "decoder requires an expected decoded length"))
     )
@@ -82,43 +84,45 @@ final class SyncCodecRuntime private (
       Left(ZarrError.InvalidCodecChain("byte pipeline must begin with bytes"))
     else
       validate(program).flatMap: _ =>
-        var bytes = encoded
+        var result: Either[ZarrError, OwnedBytes] = Right(encoded)
         var index = program.stages.length - 1
-        while index >= 0 do
+        while index >= 0 && result.isRight do
           val stage = program.stages(index)
-          if stage.input != CodecRepresentation.Bytes || stage.output != CodecRepresentation.Bytes
-          then
-            return Left(ZarrError.InvalidCodecChain(s"codec ${stage.name} is not bytes-to-bytes"))
-          executors.get(stage.name) match
-            case None           => return missing(stage.name)
-            case Some(executor) =>
-              val decoded =
-                if index == 0 then
-                  expectedDecoded match
-                    case Some(expected) => executor.decode(stage, bytes, expected, limits)
-                    case None           => executor.decodeBounded(stage, bytes, limits)
-                else executor.decodeBounded(stage, bytes, limits)
-              decoded match
-                case Left(error)  => return Left(ZarrError.CodecFailure(error))
-                case Right(found) =>
-                  if found.byteCount.toLong > limits.maxDecodedBytes.toLong then
-                    return Left(
-                      ZarrError.CodecFailure(
-                        CodecError.DecodedLimitExceeded(
-                          limits.maxDecodedBytes.toLong,
-                          found.byteCount.toLong
+          result = result.flatMap: bytes =>
+            if stage.input != CodecRepresentation.Bytes || stage.output != CodecRepresentation.Bytes
+            then Left(ZarrError.InvalidCodecChain(s"codec ${stage.name} is not bytes-to-bytes"))
+            else
+              executors.get(stage.name) match
+                case None           => missing(stage.name)
+                case Some(executor) =>
+                  val decoded =
+                    if index == 0 then
+                      expectedDecoded match
+                        case Some(expected) => executor.decode(stage, bytes, expected, limits)
+                        case None           => executor.decodeBounded(stage, bytes, limits)
+                    else executor.decodeBounded(stage, bytes, limits)
+                  decoded match
+                    case Left(error)  => Left(ZarrError.CodecFailure(error))
+                    case Right(found) =>
+                      if found.byteCount.toLong > limits.maxDecodedBytes.toLong then
+                        Left(
+                          ZarrError.CodecFailure(
+                            CodecError.DecodedLimitExceeded(
+                              limits.maxDecodedBytes.toLong,
+                              found.byteCount.toLong
+                            )
+                          )
                         )
-                      )
-                    )
-                  bytes = found
+                      else Right(found)
           index -= 1
-        expectedDecoded match
-          case Some(expected) =>
-            DecodedLength
-              .validate(bytes, expected, limits)
-              .left
-              .map(ZarrError.CodecFailure.apply)
-          case None => Right(bytes)
+        result.flatMap: bytes =>
+          expectedDecoded match
+            case Some(expected) =>
+              DecodedLength
+                .validate(bytes, expected, limits)
+                .left
+                .map(ZarrError.CodecFailure.apply)
+            case None => Right(bytes)
 
   /** Encode a bytes-to-bytes program and enforce its encoded-size limit after every stage. */
   private[zarr4s] def encodeBytes(
@@ -138,30 +142,31 @@ final class SyncCodecRuntime private (
       )
     else
       validate(program).flatMap: _ =>
-        var bytes = decoded
+        var result: Either[ZarrError, OwnedBytes] = Right(decoded)
         var index = 0
-        while index < program.stages.length do
+        while index < program.stages.length && result.isRight do
           val stage = program.stages(index)
-          if stage.input != CodecRepresentation.Bytes || stage.output != CodecRepresentation.Bytes
-          then
-            return Left(ZarrError.InvalidCodecChain(s"codec ${stage.name} is not bytes-to-bytes"))
-          executors.get(stage.name) match
-            case None           => return missing(stage.name)
-            case Some(executor) =>
-              executor.encode(stage, bytes) match
-                case Left(error)  => return Left(ZarrError.CodecFailure(error))
-                case Right(found) =>
-                  if found.byteCount.toLong > maxEncodedBytes.toLong then
-                    return Left(
-                      ZarrError.ResourceLimit(
-                        "encoded bytes",
-                        maxEncodedBytes.toLong,
-                        found.byteCount.toLong
-                      )
-                    )
-                  bytes = found
+          result = result.flatMap: bytes =>
+            if stage.input != CodecRepresentation.Bytes || stage.output != CodecRepresentation.Bytes
+            then Left(ZarrError.InvalidCodecChain(s"codec ${stage.name} is not bytes-to-bytes"))
+            else
+              executors.get(stage.name) match
+                case None           => missing(stage.name)
+                case Some(executor) =>
+                  executor.encode(stage, bytes) match
+                    case Left(error)  => Left(ZarrError.CodecFailure(error))
+                    case Right(found) =>
+                      if found.byteCount.toLong > maxEncodedBytes.toLong then
+                        Left(
+                          ZarrError.ResourceLimit(
+                            "encoded bytes",
+                            maxEncodedBytes.toLong,
+                            found.byteCount.toLong
+                          )
+                        )
+                      else Right(found)
           index += 1
-        Right(bytes)
+        result
 
   private[zarr4s] def decode(
       encoded: OwnedBytes,
