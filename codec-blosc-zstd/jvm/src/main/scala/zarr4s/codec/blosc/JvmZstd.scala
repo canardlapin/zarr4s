@@ -49,7 +49,7 @@ object JvmZstd extends SyncByteCodecExecutor:
   ): Either[CodecError, OwnedBytes] = codec match
     case found: ZstdCodec =>
       try
-        val declared = Zstd.decompressedSize(encoded.toArray)
+        val declared = Zstd.getFrameContentSize(encoded.toArray)
         if declared <= 0L then
           Left(CodecError.CorruptData(name, "zstd frame does not declare a decoded size"))
         else if declared > limits.maxDecodedBytes.toLong then
