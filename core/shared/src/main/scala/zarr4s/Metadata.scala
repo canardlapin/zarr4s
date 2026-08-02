@@ -93,6 +93,47 @@ object BuiltInDataTypes:
     if name.startsWith("r") then name.drop(1).toIntOption.flatMap(raw)
     else None
 
+  private[zarr4s] def fromV2DType(
+      value: String
+  ): Either[String, (DataTypeCapability, Option[Endianness])] =
+    if value.length < 3 then Left(s"v2 dtype '$value' must contain byte order, kind, and width")
+    else
+      val byteOrder = value.charAt(0)
+      val kind = value.charAt(1)
+      val width = value.drop(2).toIntOption match
+        case Some(found) if found > 0 => found
+        case _                        => return Left(s"v2 dtype '$value' has an invalid width")
+      val name = (kind, width) match
+        case ('b', 1)  => Some("bool")
+        case ('i', 1)  => Some("int8")
+        case ('i', 2)  => Some("int16")
+        case ('i', 4)  => Some("int32")
+        case ('i', 8)  => Some("int64")
+        case ('u', 1)  => Some("uint8")
+        case ('u', 2)  => Some("uint16")
+        case ('u', 4)  => Some("uint32")
+        case ('u', 8)  => Some("uint64")
+        case ('f', 2)  => Some("float16")
+        case ('f', 4)  => Some("float32")
+        case ('f', 8)  => Some("float64")
+        case ('c', 8)  => Some("complex64")
+        case ('c', 16) => Some("complex128")
+        case _         => None
+      val endianness =
+        if width == 1 && Set('|', '<', '>').contains(byteOrder) then Right(None)
+        else if byteOrder == '<' then Right(Some(Endianness.Little))
+        else if byteOrder == '>' then Right(Some(Endianness.Big))
+        else Left(s"v2 dtype '$value' has an unsupported byte order")
+      for
+        foundName <- name.toRight(s"v2 dtype '$value' is unsupported")
+        dataType <- fromName(foundName)
+          .orElse(all.find(_.name == foundName))
+          .toRight(
+            s"v2 dtype '$value' is unsupported"
+          )
+        foundEndianness <- endianness
+      yield dataType -> foundEndianness
+
   private case object BooleanDataType extends DataTypeCapability:
     val name = "bool"
     val scalarKind = ScalarKind.Bool
@@ -284,6 +325,15 @@ object BuiltInCodecs:
     ): Either[String, CompiledCodec] =
       requiredOrder(extension.configuration, "order").flatMap(TransposeCodec.from)
 
+  val delta: CodecCapability = new CodecCapability:
+    val name = "delta"
+
+    def compile(
+        extension: ExtensionMetadata,
+        dataType: DataTypeCapability
+    ): Either[String, CompiledCodec] =
+      DeltaCodec.fromConfiguration(extension.configuration, dataType)
+
   val bytes: CodecCapability = new CodecCapability:
     val name = "bytes"
 
@@ -347,7 +397,7 @@ object BuiltInCodecs:
         dataType: DataTypeCapability
     ): Either[String, CompiledCodec] = Right(Crc32cCodec)
 
-  val all: Vector[CodecCapability] = Vector(transpose, bytes, gzip, zlib, shuffle, crc32c)
+  val all: Vector[CodecCapability] = Vector(transpose, delta, bytes, gzip, zlib, shuffle, crc32c)
 
   private def requiredOrder(objectValue: JsonObject, field: String): Either[String, Vector[Int]] =
     objectValue.get(field) match
@@ -776,7 +826,10 @@ object ArrayDescriptor:
         capabilities,
         CodecRepresentation.ArrayValues
       ).flatMap: codecs =>
-        codecs.encodedArrayShape(outerGrid.chunkShape).map(_ => PhysicalLayout.Direct(codecs))
+        for
+          _ <- codecs.encodedArrayShape(outerGrid.chunkShape)
+          _ <- codecs.encodedArrayDataType(dataType)
+        yield PhysicalLayout.Direct(codecs)
 
   private def compileSharding(
       extension: ExtensionMetadata,
@@ -805,6 +858,7 @@ object ArrayDescriptor:
         CodecRepresentation.ArrayValues
       )
       _ <- innerCodecs.encodedArrayShape(shardedGrid.innerChunkShape)
+      _ <- innerCodecs.encodedArrayDataType(dataType)
       indexMetadata <- requiredCodecMetadata(
         configuration,
         "index_codecs",
@@ -925,6 +979,7 @@ object ArrayDescriptor:
       initial: CodecRepresentation
   ): Either[ZarrError, CodecProgram] =
     val result = Vector.newBuilder[CompiledCodec]
+    var currentDataType = dataType
     var index = 0
     while index < extensions.length do
       val extension = extensions(index)
@@ -933,10 +988,16 @@ object ArrayDescriptor:
           return Left(ZarrError.UnsupportedExtension("codec", extension.name))
         case None             => ()
         case Some(capability) =>
-          capability.compile(extension, dataType) match
+          capability.compile(extension, currentDataType) match
             case Left(detail) =>
               return Left(ZarrError.InvalidMetadata(s"$$.codecs[$index]", detail))
             case Right(codec) =>
               result += codec
+              codec match
+                case arrayCodec: ExecutableArrayCodec =>
+                  arrayCodec.encodedDataType(currentDataType) match
+                    case Left(error)  => return Left(error)
+                    case Right(found) => currentDataType = found
+                case _ => ()
       index += 1
     CodecProgram.compile(initial, result.result())

@@ -55,10 +55,10 @@ final class SyncCodecRuntime private (
       limits: DecodeLimits
   ): Either[ZarrError, PrimitiveBlock] =
     CodecRuntimeValidation
-      .arrayTrace(program, decodedShape)
+      .arrayTrace(program, decodedShape, dataType)
       .flatMap: trace =>
         trace.encodedShape.elementCount.flatMap: elementCount =>
-          expectedByteLength(dataType, elementCount).flatMap: expected =>
+          expectedByteLength(trace.encodedDataType, elementCount).flatMap: expected =>
             if expected.toLong > limits.maxDecodedBytes.toLong then
               Left(
                 ZarrError.CodecFailure(
@@ -72,7 +72,7 @@ final class SyncCodecRuntime private (
               decodeBytesAndArrays(
                 encoded,
                 program,
-                dataType,
+                trace.encodedDataType,
                 elementCount,
                 expected,
                 limits,
@@ -82,7 +82,7 @@ final class SyncCodecRuntime private (
   private def decodeBytesAndArrays(
       encoded: OwnedBytes,
       program: CodecProgram,
-      dataType: DataTypeCapability,
+      encodedDataType: DataTypeCapability,
       elementCount: Long,
       expected: ByteCount,
       limits: DecodeLimits,
@@ -111,7 +111,7 @@ final class SyncCodecRuntime private (
       case None        => Left(ZarrError.InvalidCodecChain("missing bytes codec during decode"))
       case Some(codec) =>
         ScalarBytes
-          .decode(bytes, dataType, codec.endianness, elementCount, limits)
+          .decode(bytes, encodedDataType, codec.endianness, elementCount, limits)
           .left
           .map(ZarrError.CodecFailure.apply)
           .flatMap(block => CodecRuntimeValidation.decodeArrays(block, trace))
@@ -123,6 +123,9 @@ final class SyncCodecRuntime private (
       program: CodecProgram,
       maxEncodedBytes: ByteCount
   ): Either[ZarrError, OwnedBytes] =
+    val trace = CodecRuntimeValidation.arrayTrace(program, decodedShape, dataType) match
+      case Left(error)  => return Left(error)
+      case Right(found) => found
     val expectedElements = decodedShape.elementCount match
       case Left(error)  => return Left(error)
       case Right(found) => found
@@ -149,7 +152,7 @@ final class SyncCodecRuntime private (
         case codec: BytesCodec =>
           if bytes.nonEmpty then
             return Left(ZarrError.InvalidCodecChain("bytes codec is not the first encoding stage"))
-          ScalarBytes.encode(currentBlock, dataType, codec.endianness) match
+          ScalarBytes.encode(currentBlock, trace.encodedDataType, codec.endianness) match
             case Left(error)  => return Left(ZarrError.CodecFailure(error))
             case Right(found) => bytes = Some(found)
         case stage
@@ -251,13 +254,13 @@ final class AsyncCodecRuntime private (
       decodedShape: Shape,
       limits: DecodeLimits
   )(using ExecutionContext): Future[Either[ZarrError, PrimitiveBlock]] =
-    CodecRuntimeValidation.arrayTrace(program, decodedShape) match
+    CodecRuntimeValidation.arrayTrace(program, decodedShape, dataType) match
       case Left(error)  => Future.successful(Left(error))
       case Right(trace) =>
         trace.encodedShape.elementCount match
           case Left(error)         => Future.successful(Left(error))
           case Right(elementCount) =>
-            expectedByteLength(dataType, elementCount) match
+            expectedByteLength(trace.encodedDataType, elementCount) match
               case Left(error) => Future.successful(Left(error))
               case Right(expected) if expected.toLong > limits.maxDecodedBytes.toLong =>
                 Future.successful(
@@ -307,7 +310,7 @@ final class AsyncCodecRuntime private (
                     Left(ZarrError.InvalidCodecChain("missing bytes codec during decode"))
                   case Right((bytes, Some(codec))) =>
                     ScalarBytes
-                      .decode(bytes, dataType, codec.endianness, elementCount, limits)
+                      .decode(bytes, trace.encodedDataType, codec.endianness, elementCount, limits)
                       .left
                       .map(ZarrError.CodecFailure.apply)
                       .flatMap(block => CodecRuntimeValidation.decodeArrays(block, trace))
@@ -319,6 +322,9 @@ final class AsyncCodecRuntime private (
       program: CodecProgram,
       maxEncodedBytes: ByteCount
   )(using ExecutionContext): Future[Either[ZarrError, OwnedBytes]] =
+    val encodedDataType = CodecRuntimeValidation.arrayTrace(program, decodedShape, dataType) match
+      case Left(error)  => return Future.successful(Left(error))
+      case Right(found) => found.encodedDataType
     decodedShape.elementCount match
       case Left(error) => Future.successful(Left(error))
       case Right(expectedElements) if block.elementCount.toLong != expectedElements =>
@@ -367,7 +373,7 @@ final class AsyncCodecRuntime private (
                     )
                   )
                 else
-                  ScalarBytes.encode(currentBlock, dataType, codec.endianness) match
+                  ScalarBytes.encode(currentBlock, encodedDataType, codec.endianness) match
                     case Left(error)  => Future.successful(Left(ZarrError.CodecFailure(error)))
                     case Right(found) =>
                       checked(found, maxEncodedBytes).flatMap:
@@ -499,10 +505,12 @@ private object CodecRuntimeValidation:
 
   def arrayTrace(
       program: CodecProgram,
-      decodedShape: Shape
+      decodedShape: Shape,
+      decodedDataType: DataTypeCapability
   ): Either[ZarrError, ArrayCodecTrace] =
     val stages = Vector.newBuilder[ArrayCodecStage]
     var shape = decodedShape
+    var dataType = decodedDataType
     var index = 0
     while index < program.stages.length do
       program.stages(index) match
@@ -511,12 +519,15 @@ private object CodecRuntimeValidation:
           codec.encodedShape(shape) match
             case Left(error)  => return Left(error)
             case Right(found) => shape = found
+          codec.encodedDataType(dataType) match
+            case Left(error)  => return Left(error)
+            case Right(found) => dataType = found
         case _: BytesCodec                                     => ()
         case stage if stage.input == CodecRepresentation.Bytes => ()
         case stage                                             =>
           return Left(ZarrError.UnsupportedRead(s"executable array codec ${stage.name}"))
       index += 1
-    Right(ArrayCodecTrace(stages.result(), shape))
+    Right(ArrayCodecTrace(stages.result(), shape, dataType))
 
   def decodeArrays(
       encoded: PrimitiveBlock,
@@ -560,7 +571,8 @@ private final case class ArrayCodecStage(
 
 private final case class ArrayCodecTrace(
     stages: Vector[ArrayCodecStage],
-    encodedShape: Shape
+    encodedShape: Shape,
+    encodedDataType: DataTypeCapability
 )
 
 private object SyncCrc32cExecutor extends SyncByteCodecExecutor:

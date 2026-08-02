@@ -122,18 +122,6 @@ class V2MetadataSuite extends munit.FunSuite:
         .compile(
           metadata(
             cOrder.replace(
-              "\"filters\":null",
-              "\"filters\":[{\"id\":\"delta\"}]"
-            )
-          )
-        )
-        .isLeft
-    )
-    assert(
-      V2ArrayDescriptor
-        .compile(
-          metadata(
-            cOrder.replace(
               "\"compressor\":null",
               "\"compressor\":{\"id\":\"not-a-codec\",\"level\":1}"
             )
@@ -141,6 +129,65 @@ class V2MetadataSuite extends munit.FunSuite:
         )
         .isLeft
     )
+
+  test("v2 delta lowers before bytes and uses astype byte order"):
+    val input = cOrder.replace(
+      "\"filters\":null",
+      "\"filters\":[{\"id\":\"delta\",\"dtype\":\"<i2\",\"astype\":\">i4\"}]"
+    )
+    val found = descriptor(metadata(input))
+    assertEquals(codecs(found).map(_.name), Vector("delta", "bytes"))
+    assertEquals(
+      codecs(found).collectFirst { case value: DeltaCodec => value.dtype },
+      Some("<i2")
+    )
+    assertEquals(
+      codecs(found).collectFirst { case value: DeltaCodec => value.astype },
+      Some(Some(">i4"))
+    )
+    assertEquals(
+      codecs(found).collectFirst { case value: DeltaCodec => value.encodedType.name },
+      Some("int32")
+    )
+    assertEquals(
+      codecs(found).collectFirst { case value: BytesCodec => value.endianness },
+      Some(Some(Endianness.Big))
+    )
+
+  test("v2 delta composes with shuffle and compression, and F order stays first"):
+    val input = cOrder
+      .replace(
+        "\"compressor\":null",
+        "\"compressor\":{\"id\":\"zlib\",\"level\":1}"
+      )
+      .replace(
+        "\"filters\":null",
+        "\"filters\":[{\"id\":\"delta\",\"dtype\":\"<i2\",\"astype\":\"<i2\"},{\"id\":\"shuffle\",\"elementsize\":2}]"
+      )
+    val found = descriptor(metadata(input))
+    assertEquals(codecs(found).map(_.name), Vector("delta", "bytes", "shuffle", "zlib"))
+
+    val fortran = input.replace("\"order\":\"C\"", "\"order\":\"F\"")
+    assertEquals(
+      codecs(descriptor(metadata(fortran))).map(_.name),
+      Vector("transpose", "delta", "bytes", "shuffle", "zlib")
+    )
+
+  test("v2 delta rejects ambiguous filter order and unsupported families"):
+    val reversed = cOrder.replace(
+      "\"filters\":null",
+      "\"filters\":[{\"id\":\"shuffle\",\"elementsize\":2},{\"id\":\"delta\",\"dtype\":\"<i2\"}]"
+    )
+    assert(V2ArrayDescriptor.compile(metadata(reversed)).isLeft)
+
+    val complex = cOrder
+      .replace("<i2", "<c8")
+      .replace("\"fill_value\":-1", "\"fill_value\":[0,0]")
+      .replace(
+        "\"filters\":null",
+        "\"filters\":[{\"id\":\"delta\",\"dtype\":\"<c8\",\"astype\":\"<c8\"}]"
+      )
+    assert(V2ArrayDescriptor.compile(metadata(complex)).isLeft)
     assert(
       V2ArrayDescriptor
         .compile(metadata(cOrder.replace("\"fill_value\":-1", "\"fill_value\":null")))

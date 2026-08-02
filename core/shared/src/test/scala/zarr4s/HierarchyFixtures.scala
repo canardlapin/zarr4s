@@ -16,6 +16,9 @@ object HierarchyFixtures:
   val v2ArrayShuffle: String =
     """{"zarr_format":2,"shape":[2,3],"chunks":[2,3],"dtype":"<i2","compressor":null,"fill_value":0,"order":"C","filters":[{"id":"shuffle","elementsize":2}]}"""
 
+  val v2ArrayDelta: String =
+    """{"zarr_format":2,"shape":[2,3],"chunks":[2,3],"dtype":"<i2","compressor":null,"fill_value":0,"order":"C","filters":[{"id":"delta","dtype":"<i2","astype":"<i2"},{"id":"shuffle","elementsize":2}]}"""
+
   val v2Group: String = """{"zarr_format":2}"""
 
   val v2Consolidated: String =

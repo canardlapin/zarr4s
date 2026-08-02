@@ -56,6 +56,18 @@ class V2ReaderSuite extends munit.FunSuite:
     val opened = zvalue(SyncZarr.openArray(store))
     assertEquals(shorts(full(opened)), Vector[Short](1, -2, 300, 4, 5, -6))
 
+  test("sync reader opens a Zarr-Python v2 delta plus shuffle array"):
+    val store = zvalue(
+      MemoryStore(
+        Map(
+          ".zarray" -> HierarchyFixtures.bytes(HierarchyFixtures.v2ArrayDelta),
+          "0.0" -> ZarrBinaryFixtures.v2DeltaShuffledChunk
+        )
+      )
+    )
+    val opened = zvalue(SyncZarr.openArray(store))
+    assertEquals(shorts(full(opened)), Vector[Short](100, 102, 98, 99, 101, 98))
+
   test("v2 consolidated hierarchy discovers and opens children without child metadata reads"):
     val store = zvalue(
       MemoryStore(

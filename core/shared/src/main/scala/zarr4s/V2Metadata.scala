@@ -299,6 +299,8 @@ object V2ArrayDescriptor:
       filters: Vector[JsonObject]
   ): Either[ZarrError, Vector[ExtensionMetadata]] =
     val result = Vector.newBuilder[ExtensionMetadata]
+    var deltaSeen = false
+    var byteFilterSeen = false
     var index = 0
     while index < filters.length do
       val filter = filters(index)
@@ -311,8 +313,31 @@ object V2ArrayDescriptor:
             )
           )
         case Some("shuffle") =>
+          byteFilterSeen = true
           result += ExtensionMetadata(
             "shuffle",
+            filter.removed(Set("id")),
+            true,
+            JsonObject.empty
+          )
+        case Some("delta") =>
+          if deltaSeen then
+            return Left(
+              ZarrError.InvalidMetadata(
+                s"$$.zarray.filters[$index].id",
+                "only one delta filter is supported"
+              )
+            )
+          if byteFilterSeen then
+            return Left(
+              ZarrError.InvalidMetadata(
+                s"$$.zarray.filters[$index].id",
+                "delta must precede byte filters"
+              )
+            )
+          deltaSeen = true
+          result += ExtensionMetadata(
+            "delta",
             filter.removed(Set("id")),
             true,
             JsonObject.empty
@@ -341,9 +366,12 @@ object V2ArrayDescriptor:
         true,
         JsonObject.empty
       )
-    val bytesConfiguration = dtype.endianness match
-      case None        => JsonObject.empty
-      case Some(found) =>
+    filterCodecs.filter(_.name == "delta").foreach(result += _)
+    val bytesEndianness = deltaEndianness(dtype, filterCodecs)
+    val bytesConfiguration = bytesEndianness match
+      case Left(error)        => return Left(error)
+      case Right(None)        => JsonObject.empty
+      case Right(Some(found)) =>
         JsonObject.unsafe(
           Vector(
             "endian" -> JsonValue.Str(found match
@@ -352,13 +380,32 @@ object V2ArrayDescriptor:
           )
         )
     result += ExtensionMetadata("bytes", bytesConfiguration, true, JsonObject.empty)
-    filterCodecs.foreach(result += _)
+    filterCodecs.filter(_.name != "delta").foreach(result += _)
     metadata.compressor match
       case None             => Right(result.result())
       case Some(compressor) =>
         compressorExtension(compressor, dtype).map: extension =>
           result += extension
           result.result()
+
+  private def deltaEndianness(
+      dtype: DType,
+      filterCodecs: Vector[ExtensionMetadata]
+  ): Either[ZarrError, Option[Endianness]] =
+    filterCodecs.find(_.name == "delta") match
+      case None        => Right(dtype.endianness)
+      case Some(delta) =>
+        delta.configuration.get("astype") match
+          case None                       => Right(dtype.endianness)
+          case Some(JsonValue.Str(value)) =>
+            parseDType(value).map(_.endianness)
+          case Some(_) =>
+            Left(
+              ZarrError.InvalidMetadata(
+                "$.zarray.filters.delta.astype",
+                "must be a string"
+              )
+            )
 
   private def compressorExtension(
       compressor: JsonObject,

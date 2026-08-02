@@ -37,7 +37,8 @@ including zero; regular chunk grids; default and v2-compatible chunk keys;
 Boolean values; every signed and unsigned integer width from 8 through 64 bits;
 float16; float32; float64; complex64; complex128; bounded raw-width `rN`
 carriers; C and Fortran order through normative transpose;
-little/big-endian byte encoding; the common Zarr v2 shuffle filter; chunk-local gzip and
+little/big-endian byte encoding; the common Zarr v2 shuffle and dtype-aware delta
+filters for fixed-width boolean, integer, and floating arrays; chunk-local gzip and
 Zarr v2 zlib; CRC32C; and start/end
 `sharding_indexed` reads and writes. Shared code provides deterministic
 create-only v3 array and group writers over synchronous or asynchronous object
@@ -141,7 +142,8 @@ specification.
 It intentionally does not own scientific-domain profiles, mutation, v2
 writing, S3 credentials, persistent caches, prefetch or retention policy,
 Blosc itself, or every extension. Variable-length, structured values, v2
-object arrays, and v2 filters beyond shuffle are not yet claimed. Unsupported
+object arrays, and v2 filters beyond shuffle and dtype-aware delta are not yet
+claimed. Unsupported
 metadata crosses a typed error boundary instead of being guessed at.
 
 The core has no production library dependency. Its runtime-rank values,

@@ -42,6 +42,27 @@ final class CodecProgram private (
         index += 1
       Right(shape)
 
+  /** Data type immediately before the array-to-bytes transition. */
+  def encodedArrayDataType(
+      decodedDataType: DataTypeCapability
+  ): Either[ZarrError, DataTypeCapability] =
+    if initial == CodecRepresentation.Bytes then Right(decodedDataType)
+    else
+      var dataType = decodedDataType
+      var index = 0
+      while index < stages.length do
+        stages(index) match
+          case codec: ExecutableArrayCodec =>
+            codec.encodedDataType(dataType) match
+              case Left(error)  => return Left(error)
+              case Right(found) => dataType = found
+          case _: BytesCodec                                     => return Right(dataType)
+          case stage if stage.input == CodecRepresentation.Bytes => return Right(dataType)
+          case stage                                             =>
+            return Left(ZarrError.UnsupportedRead(s"executable array codec ${stage.name}"))
+        index += 1
+      Right(dataType)
+
   override def equals(other: Any): Boolean = other match
     case that: CodecProgram => initial == that.initial && stages == that.stages
     case _                  => false
