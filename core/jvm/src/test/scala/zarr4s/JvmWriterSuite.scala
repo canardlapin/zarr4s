@@ -24,8 +24,7 @@ class JvmWriterSuite extends munit.FunSuite:
   private val directMetadata =
     """{"zarr_format":3,"node_type":"array","shape":[4,5],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,3]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":-9,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"gzip","configuration":{"level":1}},{"name":"crc32c"}],"dimension_names":["y","x"],"attributes":{},"storage_transformers":[]}"""
 
-  private val outerShardedMetadata =
-    """{"zarr_format":3,"node_type":"array","shape":[4,4],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[4,4]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"sharding_indexed","configuration":{"chunk_shape":[2,2],"codecs":[{"name":"bytes","configuration":{"endian":"little"}}],"index_codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"shuffle","configuration":{"elementsize":8}},{"name":"crc32c"}],"index_location":"start"}},{"name":"gzip","configuration":{"level":1}}],"attributes":{},"storage_transformers":[]}"""
+  private val outerShardedMetadata = ZarrBinaryFixtures.outerGzipShardedMetadata
 
   test("direct writer is create-only, deterministic, and readable"):
     val parent = Files.createTempDirectory("zarr4s-core-writer-direct")

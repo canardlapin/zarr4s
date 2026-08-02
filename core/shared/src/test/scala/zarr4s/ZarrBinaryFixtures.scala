@@ -37,6 +37,13 @@ object ZarrBinaryFixtures:
   val shardedEndMetadata: String =
     shardedStartMetadata.replace("\"index_location\":\"start\"", "\"index_location\":\"end\"")
 
+  /** A v3 sharded array with a gzip stream around the complete shard object. */
+  val outerGzipShardedMetadata =
+    """{"zarr_format":3,"node_type":"array","shape":[4,4],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[4,4]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"sharding_indexed","configuration":{"chunk_shape":[2,2],"codecs":[{"name":"bytes","configuration":{"endian":"little"}}],"index_codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"shuffle","configuration":{"elementsize":8}},{"name":"crc32c"}],"index_location":"start"}},{"name":"gzip","configuration":{"level":1}}],"attributes":{},"storage_transformers":[]}"""
+
+  val outerZlibShardedMetadata =
+    outerGzipShardedMetadata.replace("\"name\":\"gzip\"", "\"name\":\"zlib\"")
+
   val shardedEndObject: OwnedBytes = hex(
     "01000200030004000d000e000f001000" +
       "00000000000000000800000000000000" +

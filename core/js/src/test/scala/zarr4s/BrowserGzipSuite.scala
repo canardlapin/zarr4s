@@ -44,6 +44,23 @@ class BrowserGzipSuite extends munit.FunSuite:
           case Left(CodecError.DecodedLimitExceeded(5L, 10L)) => true
           case _                                              => false)
 
+  test("browser gzip bounded decode rejects an expanded stream over its limit"):
+    if BrowserGzip.available then
+      val decoded = OwnedBytes.copyOf(Array.fill[Byte](4096)(7.toByte))
+      BrowserGzip
+        .encode(decoded)
+        .flatMap:
+          case Left(error)    => fail(error.message)
+          case Right(encoded) =>
+            BrowserGzip
+              .decodeBounded(GzipCodec(1), encoded, DecodeLimits(count(128L)))
+              .map: result =>
+                assertEquals(
+                  result,
+                  Left(CodecError.DecodedLimitExceeded(128L, decoded.length.toLong))
+                )
+    else Future.successful(())
+
   test("browser decodes the Zarr-Python 3.2.1 gzip chunk"):
     if BrowserGzip.available then
       BrowserGzip
@@ -110,3 +127,73 @@ class BrowserGzipSuite extends munit.FunSuite:
                         case PrimitiveBlock.Int16(values) =>
                           assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
                         case _ => fail("expected int16")
+
+  test("browser gzip writes and reads an outer-codec sharded array"):
+    val descriptor = ZarrMetadata.parse(ZarrBinaryFixtures.outerGzipShardedMetadata) match
+      case Right(ZarrNodeMetadata.Array(metadata)) => zvalue(ArrayDescriptor.compile(metadata))
+      case Right(_)                                => fail("expected array metadata")
+      case Left(error)                             => fail(error.message)
+    val provider = AsyncChunkProvider.fromSync(
+      new ChunkProvider:
+        def chunk(
+            coordinate: ChunkCoordinate,
+            storedShape: Shape
+        ): Either[ZarrError, ChunkPayload] = coordinate.toVector match
+          case Vector(0L, 0L) =>
+            Right(
+              ChunkPayload.Values(
+                PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, 2, 3, 4)))
+              )
+            )
+          case Vector(1L, 1L) =>
+            Right(
+              ChunkPayload.Values(
+                PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](13, 14, 15, 16)))
+              )
+            )
+          case _ => Right(ChunkPayload.Fill)
+    )
+    val store = zvalue(AsyncMemoryStore(Map.empty))
+    AsyncZarrWriter
+      .create(
+        store,
+        descriptor,
+        provider,
+        runtime = BrowserCodecRuntime.portable
+      )
+      .flatMap:
+        case WriteOutcome.Incomplete(_, error) if !BrowserGzip.available =>
+          Future.successful(assert(error.message.contains("gzip")))
+        case WriteOutcome.Incomplete(_, error) => fail(error.message)
+        case WriteOutcome.Complete(receipt)    =>
+          assertEquals(store.writeTrace.map(_.key.value), Vector("c/0/0", "zarr.json"))
+          assertEquals(receipt.encodedChunks, 2L)
+          BrowserZarr
+            .openArray(store, runtime = BrowserCodecRuntime.portable)
+            .flatMap:
+              case Left(error)   => fail(error.message)
+              case Right(opened) =>
+                val region = zvalue(
+                  Region.within(
+                    descriptor.shape,
+                    zvalue(Coordinate(1L, 1L)),
+                    zvalue(Shape(3L, 3L))
+                  )
+                )
+                opened
+                  .readRegion(region)
+                  .map:
+                    case Left(error)   => fail(error.message)
+                    case Right(result) =>
+                      result.block match
+                        case PrimitiveBlock.Int16(values) =>
+                          assertEquals(
+                            values.toArray.toVector,
+                            Vector[Short](4, 0, 0, 0, 13, 14, 0, 15, 16)
+                          )
+                        case _ => fail("expected int16")
+                      assertEquals(result.receipt.objectRequests, 1)
+                      assertEquals(result.receipt.rangeRequests, 0)
+                      assertEquals(result.receipt.lengthRequests, 0)
+                      assertEquals(result.receipt.indexBytesRead, 0L)
+                      assertEquals(result.receipt.dataBytesRead, result.receipt.bytesRead)

@@ -28,6 +28,16 @@ class JvmZlibSuite extends munit.FunSuite:
     corrupt(corrupt.length / 2) = (corrupt(corrupt.length / 2) ^ 1).toByte
     assert(JvmZlib.decode(OwnedBytes.copyOf(corrupt), count(1024)).isLeft)
 
+  test("JVM zlib bounded decode rejects an expanded stream over its limit"):
+    val decoded = OwnedBytes.copyOf(Array.fill[Byte](4096)(7))
+    val encoded = JvmZlib.encode(decoded) match
+      case Right(found) => found
+      case Left(error)  => fail(error.message)
+    assertEquals(
+      JvmZlib.decodeBounded(ZlibCodec(1), encoded, DecodeLimits(count(128L))),
+      Left(CodecError.DecodedLimitExceeded(128L, decoded.length.toLong))
+    )
+
   test("JVM asynchronous runtime exposes zlib"):
     assert(JvmAsyncCodecRuntime.portable(global).executorNames.contains("zlib"))
 
@@ -94,3 +104,60 @@ class JvmZlibSuite extends munit.FunSuite:
       case PrimitiveBlock.Int16(values) =>
         assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
       case _ => fail("expected int16 result")
+
+  test("JVM zlib writes and reads an outer-codec sharded array"):
+    val descriptor = zvalue(
+      ZarrMetadata
+        .parse(ZarrBinaryFixtures.outerZlibShardedMetadata)
+        .flatMap:
+          case ZarrNodeMetadata.Array(array) => ArrayDescriptor.compile(array)
+          case _                             => Left(ZarrError.UnsupportedNodeType("group"))
+    )
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] = coordinate.toVector match
+        case Vector(0L, 0L) =>
+          Right(
+            ChunkPayload.Values(
+              PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, 2, 3, 4)))
+            )
+          )
+        case Vector(1L, 1L) =>
+          Right(
+            ChunkPayload.Values(
+              PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](13, 14, 15, 16)))
+            )
+          )
+        case _ => Right(ChunkPayload.Fill)
+    val store = zvalue(MemoryStore(Map.empty))
+    val outcome = SyncZarrWriter.create(
+      store,
+      descriptor,
+      provider,
+      runtime = JvmCodecRuntime.portable
+    )
+    outcome match
+      case WriteOutcome.Incomplete(_, error) => fail(error.message)
+      case WriteOutcome.Complete(receipt)    =>
+        assertEquals(receipt.encodedChunks, 2L)
+        val opened = zvalue(SyncZarr.openArray(store, runtime = JvmCodecRuntime.portable))
+        val region = zvalue(
+          Region.within(
+            descriptor.shape,
+            zvalue(Coordinate(1L, 1L)),
+            zvalue(Shape(3L, 3L))
+          )
+        )
+        val result = zvalue(opened.readRegion(region))
+        result.block match
+          case PrimitiveBlock.Int16(values) =>
+            assertEquals(
+              values.toArray.toVector,
+              Vector[Short](4, 0, 0, 0, 13, 14, 0, 15, 16)
+            )
+          case _ => fail("expected int16 result")
+        assertEquals(result.receipt.objectRequests, 1)
+        assertEquals(result.receipt.rangeRequests, 0)
+        assertEquals(result.receipt.lengthRequests, 0)
