@@ -864,7 +864,7 @@ object ArrayDescriptor:
         "index_codecs",
         "$.codecs[0].configuration.index_codecs"
       )
-      indexCodecs <- compileIndexCodecs(indexMetadata)
+      indexCodecs <- compileIndexCodecs(indexMetadata, capabilities)
       indexLocation <- parseIndexLocation(configuration)
       outerCodecs <- compileCodecs(
         outerExtensions,
@@ -910,41 +910,33 @@ object ArrayDescriptor:
     case Some(_)                     => Left(ZarrError.InvalidMetadata(path, "must be an array"))
 
   private def compileIndexCodecs(
-      extensions: Vector[ExtensionMetadata]
+      extensions: Vector[ExtensionMetadata],
+      capabilities: ZarrCapabilities
   ): Either[ZarrError, ShardIndexProgram] = extensions match
-    case Vector(bytes, crc) if bytes.name == "bytes" && crc.name == "crc32c" =>
-      BuiltInCodecs.bytes.compile(bytes, IndexUInt64DataType) match
-        case Left(detail) =>
-          Left(
-            ZarrError.InvalidMetadata(
-              "$.codecs[0].configuration.index_codecs[0]",
-              detail
-            )
-          )
-        case Right(found @ BytesCodec(Some(Endianness.Little))) =>
-          BuiltInCodecs.crc32c.compile(crc, IndexUInt64DataType) match
-            case Left(detail) =>
-              Left(
-                ZarrError.InvalidMetadata(
-                  "$.codecs[0].configuration.index_codecs[1]",
-                  detail
-                )
-              )
-            case Right(checksum) => ShardIndexProgram.compile(Vector(found, checksum))
-        case Right(_) =>
-          Left(
-            ZarrError.InvalidMetadata(
-              "$.codecs[0].configuration.index_codecs[0]",
-              "first supported index codec must be little-endian bytes"
-            )
-          )
+    case _ if extensions.isEmpty =>
+      Left(ZarrError.InvalidMetadata("$.codecs[0].configuration.index_codecs", "must not be empty"))
     case _ =>
-      Left(
-        ZarrError.UnsupportedExtension(
-          "shard index codec pipeline",
-          extensions.map(_.name).mkString("[", ",", "]")
-        )
-      )
+      val compiled = Vector.newBuilder[CompiledCodec]
+      var index = 0
+      while index < extensions.length do
+        val extension = extensions(index)
+        capabilities.codec(extension.name) match
+          case None =>
+            return Left(
+              ZarrError.UnsupportedExtension("shard index codec", extension.name)
+            )
+          case Some(capability) =>
+            capability.compile(extension, IndexUInt64DataType) match
+              case Left(detail) =>
+                return Left(
+                  ZarrError.InvalidMetadata(
+                    s"$$.codecs[0].configuration.index_codecs[$index]",
+                    detail
+                  )
+                )
+              case Right(codec) => compiled += codec
+        index += 1
+      ShardIndexProgram.compile(compiled.result())
 
   private object IndexUInt64DataType extends DataTypeCapability:
     val name = "uint64"

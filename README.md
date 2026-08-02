@@ -1,6 +1,6 @@
 # zarr4s
 
-zarr4s is a portable Scala 3 implementation of Zarr v3 with read-only support
+zarr4s is a portable Scala 3 implementation of Zarr v3 with create-only support
 for common Zarr v2 arrays and groups. The `zarr4s-core` artifact provides
 runtime-rank array metadata, chunk planning, codec programs, object-store
 capabilities, readers, create-only writers, and bounded caches.
@@ -41,8 +41,11 @@ little/big-endian byte encoding; the common Zarr v2 shuffle and dtype-aware delt
 filters for fixed-width boolean, integer, and floating arrays; chunk-local gzip and
 Zarr v2 zlib; CRC32C; and start/end
 `sharding_indexed` reads and writes. Shared code provides deterministic
-create-only v3 array and group writers over synchronous or asynchronous object
-capabilities. The same shared `AsyncZarr` reader runs on the JVM and Scala.js;
+create-only v3 and common v2 array and group writers over synchronous or
+asynchronous object capabilities. Set `format = ZarrFormat.V2` to publish v2
+`.zattrs` before data and a final `.zarray` or `.zgroup` completion marker;
+v2 writers use normative v2 chunk keys with the descriptor's separator. The
+same shared `AsyncZarr` reader runs on the JVM and Scala.js;
 `BrowserZarr` remains a source-compatible facade that selects browser gzip and
 zlib by default. JVM adds confined filesystem and checked HTTP range stores, an
 explicit blocking-reader adapter whose blocking execution context is supplied
@@ -113,17 +116,18 @@ val written = ZarrPath("subjects/sub-01/bold").map: path =>
 `ObjectWriter.create` and `AsyncObjectWriter.create` create one immutable
 object and refuse replacement. The interpreters visit chunks in deterministic
 grid order, omit declared fill chunks, bound one encoded chunk or shard at a
-time, and create `zarr.json` last. `WriteOutcome.Complete` therefore has a
-completion marker. `WriteOutcome.Incomplete` retains the exact objects, bytes,
+time, and create the primary metadata object last. `WriteOutcome.Complete`
+therefore has a completion marker. `WriteOutcome.Incomplete` retains the exact
+objects, bytes,
 logical chunks, fill/padding omissions, and typed error seen before an
 object-store interruption; it never implies namespace rollback. Async writing
 waits for each provider, codec, and object effect before advancing, providing
 portable backpressure. `JvmZarrWriter` strengthens this base contract by
 cleaning a private stage and atomically moving the completed directory.
 
-Every written object and the metadata marker carry a portable SHA-256 identity
-in `WriteReceipt`. The same interpreter handles scalar, empty, and arbitrary
-rank arrays, all built-in fixed-width carriers, transpose, default and v2 chunk
+Every written object and the primary metadata marker carry a portable SHA-256
+identity in `WriteReceipt`. The same interpreter handles scalar, empty, and
+arbitrary rank arrays, all built-in fixed-width carriers, transpose, default and v2 chunk
 keys, CRC32C, platform gzip/zlib, optional byte-codec providers, and start/end
 indexed sharding. It deliberately provides no overwrite, resize, append, or
 concurrent-mutation operation.
@@ -139,11 +143,10 @@ honestly. V3 inline consolidation is treated as an optional interoperability
 extension rather than a claim that it is part of the normative v3
 specification.
 
-It intentionally does not own scientific-domain profiles, mutation, v2
-writing, S3 credentials, persistent caches, prefetch or retention policy,
-Blosc itself, or every extension. Variable-length, structured values, v2
-object arrays, and v2 filters beyond shuffle and dtype-aware delta are not yet
-claimed. Unsupported
+It intentionally does not own scientific-domain profiles, mutation, S3
+credentials, persistent caches, prefetch or retention policy, or every
+extension. Variable-length, structured values, v2 object arrays, and v2
+filters beyond shuffle and dtype-aware delta are not yet claimed. Unsupported
 metadata crosses a typed error boundary instead of being guessed at.
 
 The core has no production library dependency. Its runtime-rank values,
@@ -185,7 +188,9 @@ implementation. A second pinned fixture comes from the official
 [`zarr_implementations`](https://github.com/zarr-developers/zarr_implementations)
 compatibility corpus and exercises a Zarr v2 group, dot chunk key, uint8 data,
 and gzip on both platforms. Its older draft-v3 material is not presented as
-current Zarr v3 conformance.
+current Zarr v3 conformance. The create-only V2 writer has opt-in external
+readback gates in [`tools/verify_zarr_python_interop.py`](tools/verify_zarr_python_interop.py)
+and [`tools/verify_zarrs_v2_interop.py`](tools/verify_zarrs_v2_interop.py).
 
 The opt-in [`tools/zarr-java-oracle`](tools/zarr-java-oracle) project
 provides a reciprocal zarr-java 0.1.3 gate without entering the Scala module

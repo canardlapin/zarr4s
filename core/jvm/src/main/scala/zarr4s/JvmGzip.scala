@@ -24,6 +24,15 @@ object JvmGzip extends SyncByteCodecExecutor:
         )
       )
 
+  override def decodeBounded(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      limits: DecodeLimits
+  ): Either[CodecError, OwnedBytes] = codec match
+    case _: GzipCodec => decodeBounded(encoded, limits)
+    case found        =>
+      Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+
   def encode(
       codec: CompiledCodec,
       decoded: OwnedBytes
@@ -73,6 +82,30 @@ object JvmGzip extends SyncByteCodecExecutor:
           limits
         )
       catch case NonFatal(error) => Left(CodecError.CorruptData("gzip", error.getMessage))
+
+  /** Decode a gzip stream while bounding the materialized expansion. */
+  def decodeBounded(
+      encoded: OwnedBytes,
+      limits: DecodeLimits = DecodeLimits.default
+  ): Either[CodecError, OwnedBytes] =
+    val limit = math.min(limits.maxDecodedBytes.toLong, Int.MaxValue.toLong)
+    try
+      val input = new GZIPInputStream(new ByteArrayInputStream(encoded.values))
+      val output = new ByteArrayOutputStream(math.min(limit, 65536L).toInt)
+      val buffer = new Array[Byte](8192)
+      var total = 0L
+      var read = input.read(buffer)
+      while read >= 0 do
+        if read > 0 then
+          total += read.toLong
+          if total > limit then
+            input.close()
+            return Left(CodecError.DecodedLimitExceeded(limit, total))
+          output.write(buffer, 0, read)
+        read = input.read(buffer)
+      input.close()
+      Right(OwnedBytes.unsafe(output.toByteArray))
+    catch case NonFatal(error) => Left(CodecError.CorruptData("gzip", error.getMessage))
 
   def encode(decoded: OwnedBytes, level: Int = 1): Either[CodecError, OwnedBytes] =
     if level < 0 || level > 9 then

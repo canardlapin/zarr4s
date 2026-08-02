@@ -146,6 +146,25 @@ object BloscZstdProvider:
 private[blosc] object BloscFrame:
   private val HeaderBytes = 16
 
+  def declaredDecodedLength(
+      encoded: OwnedBytes,
+      limits: DecodeLimits
+  ): Either[CodecError, ByteCount] =
+    if encoded.length < HeaderBytes then
+      Left(
+        CodecError.CorruptData(
+          "blosc",
+          s"header requires $HeaderBytes bytes, found ${encoded.length}"
+        )
+      )
+    else
+      val decodedLength = littleEndianUInt32(encoded, 4)
+      if decodedLength > limits.maxDecodedBytes.toLong then
+        Left(CodecError.DecodedLimitExceeded(limits.maxDecodedBytes.toLong, decodedLength))
+      else if decodedLength > Int.MaxValue.toLong then
+        Left(CodecError.DecodedLimitExceeded(Int.MaxValue.toLong, decodedLength))
+      else Right(ByteCount.unsafe(decodedLength))
+
   def validate(
       codec: BloscZstdCodec,
       encoded: OwnedBytes,

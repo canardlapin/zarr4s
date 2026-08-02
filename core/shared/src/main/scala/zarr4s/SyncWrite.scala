@@ -2,11 +2,11 @@ package zarr4s
 
 import scala.util.control.NonFatal
 
-/** Store-independent, create-only Zarr v3 writer.
+/** Store-independent, create-only Zarr writer.
   *
-  * Data objects are created in deterministic grid order and `zarr.json` is created last. An
-  * incomplete outcome is intentionally observable because a generic object store cannot promise
-  * namespace rollback.
+  * Data objects are created in deterministic grid order and the primary metadata object is created
+  * last. An incomplete outcome is intentionally observable because a generic object store cannot
+  * promise namespace rollback.
   */
 object SyncZarrWriter:
   def create(
@@ -15,20 +15,23 @@ object SyncZarrWriter:
       provider: ChunkProvider,
       path: ZarrPath = ZarrPath.root,
       limits: WriterLimits = WriterLimits(),
-      runtime: SyncCodecRuntime = SyncCodecRuntime.core
+      runtime: SyncCodecRuntime = SyncCodecRuntime.core,
+      format: ZarrFormat = ZarrFormat.V3
   ): WriteOutcome =
     val metrics = new WriteMetrics
+    val writeDescriptor = WriteInternals.descriptorForWrite(descriptor, format)
     val result =
       try
         for
           _ <- OpenValidation.codecPrograms(descriptor, runtime.validate)
-          metadata <- WriteInternals.arrayMetadata(descriptor, path, limits)
+          metadata <- WriteInternals.arrayMetadata(descriptor, path, limits, format)
+          _ <- publishPrelude(store, metadata, limits, metrics)
           _ <- writeArray(
             store,
-            descriptor,
+            writeDescriptor,
             provider,
             path,
-            metadata._2.byteCount,
+            metadata.primaryBytes.byteCount,
             limits,
             runtime,
             metrics
@@ -42,13 +45,15 @@ object SyncZarrWriter:
       store: ObjectWriter,
       metadata: GroupMetadata,
       path: ZarrPath = ZarrPath.root,
-      limits: WriterLimits = WriterLimits()
+      limits: WriterLimits = WriterLimits(),
+      format: ZarrFormat = ZarrFormat.V3
   ): WriteOutcome =
     val metrics = new WriteMetrics
     val result =
       try
         for
-          rendered <- WriteInternals.groupMetadata(metadata, path, limits)
+          rendered <- WriteInternals.groupMetadata(metadata, path, limits, format)
+          _ <- publishPrelude(store, rendered, limits, metrics)
           receipt <- finish(store, rendered, metrics)
         yield receipt
       catch case NonFatal(error) => Left(ZarrError.WriteFailure(error.getMessage))
@@ -76,27 +81,22 @@ object SyncZarrWriter:
         runtime,
         metrics
       )
-    case PhysicalLayout.Sharded(sharded, innerCodecs, _, location, outerCodecs) =>
-      if outerCodecs.nonEmpty then
-        Left(
-          ZarrError.UnsupportedWrite(
-            "outer codecs after sharding_indexed are not supported"
-          )
-        )
-      else
-        writeSharded(
-          store,
-          descriptor,
-          sharded,
-          innerCodecs,
-          location,
-          provider,
-          path,
-          metadataLength,
-          limits,
-          runtime,
-          metrics
-        )
+    case PhysicalLayout.Sharded(sharded, innerCodecs, indexCodecs, location, outerCodecs) =>
+      writeSharded(
+        store,
+        descriptor,
+        sharded,
+        innerCodecs,
+        indexCodecs,
+        location,
+        outerCodecs,
+        provider,
+        path,
+        metadataLength,
+        limits,
+        runtime,
+        metrics
+      )
 
   private def writeDirect(
       store: ObjectWriter,
@@ -142,7 +142,9 @@ object SyncZarrWriter:
       descriptor: ArrayDescriptor,
       sharded: ShardedGrid,
       innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
+      outerCodecs: CodecProgram,
       provider: ChunkProvider,
       path: ZarrPath,
       metadataLength: ByteCount,
@@ -156,7 +158,9 @@ object SyncZarrWriter:
         sharded,
         shardCoordinate,
         innerCodecs,
+        indexCodecs,
         location,
+        outerCodecs,
         provider,
         limits,
         runtime,
@@ -175,7 +179,9 @@ object SyncZarrWriter:
       sharded: ShardedGrid,
       shardCoordinate: ChunkCoordinate,
       innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
+      outerCodecs: CodecProgram,
       provider: ChunkProvider,
       limits: WriterLimits,
       runtime: SyncCodecRuntime,
@@ -225,8 +231,11 @@ object SyncZarrWriter:
       WriteInternals.assembleShard(
         encodedChunks.result(),
         sharded.innerChunksPerShard,
+        indexCodecs,
         location,
-        limits
+        outerCodecs,
+        limits,
+        runtime
       )
     )
 
@@ -243,12 +252,26 @@ object SyncZarrWriter:
     _ <- metrics.record(WriteInternals.written(key, bytes))
   yield ()
 
+  private def publishPrelude(
+      store: ObjectWriter,
+      metadata: WriteInternals.MetadataObjects,
+      limits: WriterLimits,
+      metrics: WriteMetrics
+  ): Either[ZarrError, Unit] = metadata.prelude match
+    case None               => Right(())
+    case Some((key, bytes)) =>
+      for
+        _ <- metrics.permitMetadataObject(bytes.byteCount, metadata.primaryBytes.byteCount, limits)
+        _ <- store.create(key, bytes).left.map(ZarrError.StoreFailure.apply)
+        _ <- metrics.recordMetadata(WriteInternals.written(key, bytes))
+      yield ()
+
   private def finish(
       store: ObjectWriter,
-      metadata: (StoreKey, OwnedBytes),
+      metadata: WriteInternals.MetadataObjects,
       metrics: WriteMetrics
   ): Either[ZarrError, WriteReceipt] =
-    val (key, bytes) = metadata
+    val (key, bytes) = metadata.primary
     store
       .create(key, bytes)
       .left

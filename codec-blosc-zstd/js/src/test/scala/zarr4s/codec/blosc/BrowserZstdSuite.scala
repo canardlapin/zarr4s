@@ -1,5 +1,6 @@
 package zarr4s.codec.blosc
 
+import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import zarr4s.*
@@ -75,6 +76,67 @@ class BrowserZstdSuite extends munit.FunSuite:
                   case PrimitiveBlock.Int16(values) =>
                     assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
                   case _ => fail("expected int16 result")
+
+  test("Scala.js provider writer publishes a v2 zstd compressor"):
+    val descriptor = zvalue(
+      ZarrMetadata
+        .parse(ZstdFixtures.v3ArrayZstd)
+        .flatMap:
+          case ZarrNodeMetadata.Array(array) =>
+            ArrayDescriptor.compile(array, BloscZstdProvider.capabilities())
+          case _ => Left(ZarrError.UnsupportedNodeType("group"))
+    )
+    val provider = new AsyncChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      )(using ExecutionContext): Future[Either[ZarrError, ChunkPayload]] =
+        Future.successful(
+          Right(
+            ChunkPayload.Values(
+              PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, -2, 300, 4, 5, -6)))
+            )
+          )
+        )
+    val store = zvalue(AsyncMemoryStore(Map.empty))
+    AsyncZarrWriter
+      .create(
+        store,
+        descriptor,
+        provider,
+        runtime = BrowserBloscZstdRuntime.portable,
+        format = ZarrFormat.V2
+      )
+      .flatMap:
+        case WriteOutcome.Incomplete(_, error) => fail(error.message)
+        case WriteOutcome.Complete(receipt)    =>
+          assertEquals(store.writeTrace.map(_.key.value), Vector(".zattrs", "0/0", ".zarray"))
+          assertEquals(receipt.metadata.key.value, ".zarray")
+          BrowserZarr
+            .openArray(
+              store,
+              capabilities = BloscZstdProvider.capabilities(),
+              runtime = BrowserBloscZstdRuntime.portable
+            )
+            .flatMap:
+              case Left(error)   => fail(error.message)
+              case Right(opened) =>
+                val region = zvalue(
+                  Region.within(
+                    descriptor.shape,
+                    zvalue(Coordinate(0L, 0L)),
+                    descriptor.shape
+                  )
+                )
+                opened
+                  .readRegion(region)
+                  .map:
+                    case Left(error)   => fail(error.message)
+                    case Right(result) =>
+                      result.block match
+                        case PrimitiveBlock.Int16(values) =>
+                          assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
+                        case _ => fail("expected int16 result")
 
   test("optional runtime advertises zstd without changing the default browser runtime"):
     assert(!BrowserCodecRuntime.portable.executorNames.contains("zstd"))

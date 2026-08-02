@@ -63,6 +63,37 @@ class AsyncWriterSuite extends munit.FunSuite:
           case _                           => fail("expected int16")
         assertEquals(values, (1 to 8).map(_.toShort).toVector)
 
+  test("async v2 creation publishes v2 metadata and chunk keys"):
+    val found = descriptor(
+      """{"zarr_format":3,"node_type":"array","shape":[2,4],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,2]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"shuffle","configuration":{"elementsize":2}}],"attributes":{},"storage_transformers":[]}"""
+    )
+    val provider = new AsyncChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      )(using ExecutionContext): Future[Either[ZarrError, ChunkPayload]] =
+        val payload = coordinate.toVector match
+          case Vector(0L, 0L) =>
+            ChunkPayload.Values(PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, 2, 5, 6))))
+          case Vector(0L, 1L) =>
+            ChunkPayload.Values(PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](3, 4, 7, 8))))
+          case _ => ChunkPayload.Fill
+        Future.successful(Right(payload))
+    val store = zvalue(AsyncMemoryStore(Map.empty))
+    AsyncZarrWriter
+      .create(store, found, provider, format = ZarrFormat.V2)
+      .map: outcome =>
+        val receipt = completed(outcome)
+        assertEquals(store.writeTrace.map(_.key.value), Vector(".zattrs", "0/0", "0/1", ".zarray"))
+        assertEquals(receipt.metadataObjects.map(_.key.value), Vector(".zattrs"))
+        assert(!store.snapshot.contains("zarr.json"))
+        val opened = zvalue(SyncZarr.openArray(zvalue(MemoryStore(store.snapshot))))
+        val region = zvalue(Region.within(found.shape, zvalue(Coordinate(0L, 0L)), found.shape))
+        val values = zvalue(opened.readRegion(region)).block match
+          case PrimitiveBlock.Int16(found) => found.toArray.toVector
+          case _                           => fail("expected int16")
+        assertEquals(values, Vector[Short](1, 2, 3, 4, 5, 6, 7, 8))
+
   test("async indexed sharding reproduces the synchronous object"):
     val found = descriptor(ZarrBinaryFixtures.shardedEndMetadata)
     val provider = new AsyncChunkProvider:

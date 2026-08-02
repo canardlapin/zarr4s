@@ -101,6 +101,117 @@ class WriterSuite extends munit.FunSuite:
     val opened = zvalue(SyncZarr.openGroup(store, path))
     assertEquals(opened.metadata.attributes, metadata.attributes)
 
+  test("v2 array creation publishes attrs before data and uses v2 chunk keys"):
+    val found = descriptor(
+      """{"zarr_format":3,"node_type":"array","shape":[2,4],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,2]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"shuffle","configuration":{"elementsize":2}}],"dimension_names":["y","x"],"attributes":{"title":"v2"},"storage_transformers":[]}"""
+    )
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] =
+        coordinate.toVector match
+          case Vector(0L, 0L) =>
+            Right(
+              ChunkPayload.Values(
+                PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, 2, 5, 6)))
+              )
+            )
+          case Vector(0L, 1L) =>
+            Right(
+              ChunkPayload.Values(
+                PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](3, 4, 7, 8)))
+              )
+            )
+          case _ => Right(ChunkPayload.Fill)
+    val store = zvalue(MemoryStore(Map.empty))
+    val receipt = complete(
+      SyncZarrWriter.create(store, found, provider, format = ZarrFormat.V2)
+    )
+    assertEquals(
+      store.writeTrace.map(_.key.value),
+      Vector(".zattrs", "0/0", "0/1", ".zarray")
+    )
+    assertEquals(receipt.metadata.key.value, ".zarray")
+    assertEquals(receipt.metadataObjects.map(_.key.value), Vector(".zattrs"))
+    assertEquals(receipt.totalObjects, 4)
+    assert(!store.snapshot.contains("zarr.json"))
+    val v2 = zvalue(
+      V2Metadata.parseArray(
+        new String(store.snapshot(".zarray").toArray, "UTF-8"),
+        Some(new String(store.snapshot(".zattrs").toArray, "UTF-8"))
+      )
+    )
+    assertEquals(v2.dtype, "<i2")
+    assertEquals(v2.dimensionSeparator, ChunkSeparator.Slash)
+    val opened = zvalue(SyncZarr.openArray(store))
+    val origin = zvalue(Coordinate.from(Vector(0L, 0L)))
+    val region = zvalue(Region.within(found.shape, origin, found.shape))
+    val result = zvalue(opened.readRegion(region)).block
+    result match
+      case PrimitiveBlock.Int16(values) =>
+        assertEquals(values.toArray.toVector, Vector[Short](1, 2, 3, 4, 5, 6, 7, 8))
+      case _ => fail("expected int16 v2 result")
+
+  test("v2 group creation publishes attrs and .zgroup"):
+    val store = zvalue(MemoryStore(Map.empty))
+    val path = zvalue(ZarrPath("study"))
+    val metadata = GroupMetadata(
+      JsonObject.unsafe(Vector("title" -> JsonValue.Str("v2"))),
+      JsonObject.empty
+    )
+    val receipt = complete(
+      SyncZarrWriter.createGroup(store, metadata, path, format = ZarrFormat.V2)
+    )
+    assertEquals(store.writeTrace.map(_.key.value), Vector("study/.zattrs", "study/.zgroup"))
+    assertEquals(receipt.metadata.key.value, "study/.zgroup")
+    assertEquals(receipt.totalObjects, 2)
+    val opened = zvalue(SyncZarr.openGroup(store, path))
+    assertEquals(opened.metadata.attributes, metadata.attributes)
+
+  test("v2 writer lowers delta into the normative filter slot"):
+    val found = descriptor(
+      """{"zarr_format":3,"node_type":"array","shape":[2,3],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,3]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"delta","configuration":{"dtype":"<i2"}},{"name":"bytes","configuration":{"endian":"little"}}],"attributes":{},"storage_transformers":[]}"""
+    )
+    val store = zvalue(MemoryStore(Map.empty))
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] =
+        Right(
+          ChunkPayload.Values(
+            PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, -2, 300, 4, 5, -6)))
+          )
+        )
+    complete(SyncZarrWriter.create(store, found, provider, format = ZarrFormat.V2))
+    val zarray = new String(store.snapshot(".zarray").toArray, "UTF-8")
+    assert(zarray.contains("\"id\":\"delta\""))
+    assert(zarray.contains("\"compressor\":null"))
+    val opened = zvalue(SyncZarr.openArray(store))
+    val region = zvalue(Region.within(found.shape, zvalue(Coordinate(0L, 0L)), found.shape))
+    zvalue(opened.readRegion(region)).block match
+      case PrimitiveBlock.Int16(values) =>
+        assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
+      case _ => fail("expected int16 result")
+
+  test("v2 writer rejects sharded layouts before publishing metadata"):
+    val found = descriptor(ZarrBinaryFixtures.shardedStartMetadata)
+    val store = zvalue(MemoryStore(Map.empty))
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] = Right(ChunkPayload.Fill)
+    SyncZarrWriter.create(store, found, provider, format = ZarrFormat.V2) match
+      case WriteOutcome.Complete(_)                 => fail("v2 sharding must be rejected")
+      case WriteOutcome.Incomplete(progress, error) =>
+        assertEquals(progress.objects, Vector.empty)
+        assert(error match
+          case ZarrError.UnsupportedWrite(message) => message.contains("sharding_indexed")
+          case _                                   => false)
+    assertEquals(store.writeTrace, Vector.empty)
+
   test("all fixed-width scalar carriers round trip through a prefixed v2-key writer"):
     val carriers = Vector[(String, String, PrimitiveBlock)](
       ("bool", "false", PrimitiveBlock.Bool(OwnedBooleans.copyOf(Array(true, false, true, true)))),

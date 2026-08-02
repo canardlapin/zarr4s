@@ -34,6 +34,26 @@ object BrowserBloscZstd extends AsyncByteCodecExecutor:
         )
       )
 
+  override def decodeBounded(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      limits: DecodeLimits
+  )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] = codec match
+    case found: BloscZstdCodec =>
+      BloscFrame.declaredDecodedLength(encoded, limits) match
+        case Left(error)     => Future.successful(Left(error))
+        case Right(expected) =>
+          BloscFrame.validate(found, encoded, expected, limits) match
+            case Left(error) => Future.successful(Left(error))
+            case Right(_)    =>
+              transform(found, encoded, encode = false).map:
+                case Left(error)    => Left(error)
+                case Right(decoded) => DecodedLength.validate(decoded, expected, limits)
+    case found =>
+      Future.successful(
+        Left(CodecError.CorruptData("blosc", s"executor received compiled codec ${found.name}"))
+      )
+
   /** Encode using numcodecs.js. Its Blosc binding fixes `typesize` at four and does not expose it,
     * so accepting another stride here would silently write metadata-inconsistent shuffle frames.
     */

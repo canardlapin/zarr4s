@@ -56,6 +56,37 @@ object BrowserZstd extends AsyncByteCodecExecutor:
           DecodedLength.validate(fromUint8Array(output), expectedDecoded, limits)
         catch case NonFatal(error) => Left(corrupt(error))
 
+  override def decodeBounded(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      limits: DecodeLimits
+  )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] = codec match
+    case _: ZstdCodec if limits.maxDecodedBytes.toLong > Int.MaxValue.toLong =>
+      Future.successful(
+        Left(CodecError.DecodedLimitExceeded(Int.MaxValue.toLong, limits.maxDecodedBytes.toLong))
+      )
+    case _: ZstdCodec =>
+      Future:
+        try
+          val output = ZstdifyDecompress(
+            toUint8Array(encoded),
+            js.Dynamic.literal(maxSize = limits.maxDecodedBytes.toLong.toDouble)
+          )
+          val decoded = fromUint8Array(output)
+          if decoded.byteCount.toLong > limits.maxDecodedBytes.toLong then
+            Left(
+              CodecError.DecodedLimitExceeded(
+                limits.maxDecodedBytes.toLong,
+                decoded.byteCount.toLong
+              )
+            )
+          else Right(decoded)
+        catch case NonFatal(error) => Left(corrupt(error))
+    case found =>
+      Future.successful(
+        Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+      )
+
   def encode(
       decoded: OwnedBytes,
       codec: ZstdCodec

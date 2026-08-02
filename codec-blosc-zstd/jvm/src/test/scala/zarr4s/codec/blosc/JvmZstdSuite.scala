@@ -24,6 +24,17 @@ class JvmZstdSuite extends munit.FunSuite:
       decoded
     )
 
+  test("JVM provider supports bounded decode for whole-object use"):
+    val codec = zcodec(3, true)
+    val encoded = right(JvmZstd.encode(codec, decoded))
+    assertEquals(JvmZstd.decodeBounded(codec, encoded, DecodeLimits.default), Right(decoded))
+    assert(
+      JvmZstd
+        .decodeBounded(codec, encoded, DecodeLimits(ByteCount.unsafe(8L)))
+        .left
+        .exists(_.isInstanceOf[CodecError.DecodedLimitExceeded])
+    )
+
   test("JVM provider rejects wrong lengths, limits, and corruption"):
     val codec = zcodec(3, false)
     val encoded = right(JvmZstd.encode(codec, decoded))
@@ -58,6 +69,52 @@ class JvmZstdSuite extends munit.FunSuite:
         opened.descriptor.shape
       )
     )
+    zvalue(opened.readRegion(region)).block match
+      case PrimitiveBlock.Int16(values) =>
+        assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
+      case _ => fail("expected int16 result")
+
+  test("JVM provider writer publishes a v2 zstd compressor"):
+    val descriptor = zvalue(
+      ZarrMetadata
+        .parse(ZstdFixtures.v3ArrayZstd)
+        .flatMap:
+          case ZarrNodeMetadata.Array(array) =>
+            ArrayDescriptor.compile(array, BloscZstdProvider.capabilities())
+          case _ => Left(ZarrError.UnsupportedNodeType("group"))
+    )
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] =
+        Right(
+          ChunkPayload.Values(
+            PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, -2, 300, 4, 5, -6)))
+          )
+        )
+    val store = zvalue(MemoryStore(Map.empty))
+    val outcome = SyncZarrWriter.create(
+      store,
+      descriptor,
+      provider,
+      runtime = JvmBloscZstdRuntime.portable,
+      format = ZarrFormat.V2
+    )
+    val receipt = outcome match
+      case WriteOutcome.Complete(found)      => found
+      case WriteOutcome.Incomplete(_, error) => fail(error.message)
+    assertEquals(store.writeTrace.map(_.key.value), Vector(".zattrs", "0/0", ".zarray"))
+    assertEquals(receipt.metadata.key.value, ".zarray")
+    val opened = zvalue(
+      SyncZarr.openArray(
+        store,
+        capabilities = BloscZstdProvider.capabilities(),
+        runtime = JvmBloscZstdRuntime.portable
+      )
+    )
+    val region =
+      zvalue(Region.within(descriptor.shape, zvalue(Coordinate(0L, 0L)), descriptor.shape))
     zvalue(opened.readRegion(region)).block match
       case PrimitiveBlock.Int16(values) =>
         assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))

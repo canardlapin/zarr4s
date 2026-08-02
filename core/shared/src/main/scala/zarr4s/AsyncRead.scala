@@ -114,14 +114,18 @@ final class AsyncOpenedArray private[zarr4s] (
   ): Future[Either[ZarrError, FragmentFoldResult[S]]] = descriptor.layout match
     case PhysicalLayout.Direct(codecs) =>
       foldDirectFragments(selection, initial, codecs, limits, consume)
-    case PhysicalLayout.Sharded(sharded, innerCodecs, _, location, outerCodecs) =>
+    case PhysicalLayout.Sharded(sharded, innerCodecs, indexCodecs, location, outerCodecs) =>
       if outerCodecs.nonEmpty then
-        Future.successful(
-          Left(
-            ZarrError.UnsupportedRead(
-              "outer codecs after sharding_indexed prevent bounded partial reads"
-            )
-          )
+        foldWholeShardedFragments(
+          selection,
+          initial,
+          sharded,
+          innerCodecs,
+          indexCodecs,
+          location,
+          outerCodecs,
+          limits,
+          consume
         )
       else
         foldShardedFragments(
@@ -129,6 +133,7 @@ final class AsyncOpenedArray private[zarr4s] (
           initial,
           sharded,
           innerCodecs,
+          indexCodecs,
           location,
           limits,
           consume
@@ -275,11 +280,182 @@ final class AsyncOpenedArray private[zarr4s] (
       )
     case Right(found) => loop(index + 1, found.state)
 
+  private def foldWholeShardedFragments[S](
+      selection: FactoredSelection,
+      initial: S,
+      sharded: ShardedGrid,
+      innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
+      location: IndexLocation,
+      outerCodecs: CodecProgram,
+      limits: ReadLimits,
+      consume: (S, ChunkFragment) => Future[Either[ZarrError, FragmentControl[S]]]
+  ): Future[Either[ZarrError, FragmentFoldResult[S]]] =
+    val planned = for
+      inner <- ChunkPlanner.planFactored(sharded.globalInnerGrid, selection, limits.planning)
+      grouped <- ShardPlanner.group(sharded, inner)
+    yield inner -> grouped
+    planned match
+      case Left(error) => Future.successful(Left(error))
+      case Right((_, grouped)) if grouped.touchedShards > limits.maxObjects =>
+        Future.successful(
+          Left(ZarrError.ResourceLimit("read shards", limits.maxObjects, grouped.touchedShards))
+        )
+      case Right((innerPlan, grouped)) =>
+        val metrics = FragmentMetrics.checked(
+          innerPlan.demands.length,
+          innerPlan.stats.requestedElements,
+          descriptor.dataType.byteWidth,
+          grouped.touchedShards
+        ) match
+          case Left(error)  => return Future.successful(Left(error))
+          case Right(found) => found
+
+        def processInner(
+            shard: ShardDemand,
+            state: S,
+            indexInShard: Int,
+            decodedShard: Option[(OwnedBytes, ShardIndex)]
+        ): Future[Either[ZarrError, FragmentProgress[S]]] =
+          if indexInShard >= shard.innerChunks.length then
+            Future.successful(Right(FragmentProgress(state, stopped = false)))
+          else
+            val inner = shard.innerChunks(indexInShard)
+            inner.copy match
+              case ChunkCopy.FactoredCopy(copy) =>
+                val global = globalInnerCoordinate(shard.coordinate, inner.localCoordinate, sharded)
+                def fill: Future[Either[ZarrError, FragmentProgress[S]]] =
+                  deliver(
+                    state,
+                    ChunkFragment.fill(
+                      global,
+                      copy,
+                      selection.outputShape,
+                      descriptor.dataType,
+                      descriptor.fillValue
+                    ),
+                    metrics,
+                    consume
+                  ).flatMap:
+                    case Left(error)                   => Future.successful(Left(error))
+                    case Right(found) if found.stopped => Future.successful(Right(found))
+                    case Right(found)                  =>
+                      processInner(shard, found.state, indexInShard + 1, decodedShard)
+
+                decodedShard match
+                  case None               => fill
+                  case Some((raw, index)) =>
+                    index.entry(inner.localCoordinate) match
+                      case Left(error)                 => Future.successful(Left(error))
+                      case Right(ShardIndexEntry.Fill) => fill
+                      case Right(ShardIndexEntry.Present(offset, length)) =>
+                        wholeShardChunk(raw, offset, length, limits) match
+                          case Left(error)         => Future.successful(Left(error))
+                          case Right(encodedChunk) =>
+                            ChunkGeometry.storedShape(
+                              sharded.globalInnerGrid,
+                              global
+                            ) match
+                              case Left(error)       => Future.successful(Left(error))
+                              case Right(chunkShape) =>
+                                runtime
+                                  .decode(
+                                    encodedChunk,
+                                    innerCodecs,
+                                    descriptor.dataType,
+                                    chunkShape,
+                                    limits.decode
+                                  )
+                                  .flatMap:
+                                    case Left(error)    => Future.successful(Left(error))
+                                    case Right(decoded) =>
+                                      deliver(
+                                        state,
+                                        ChunkFragment.decoded(
+                                          global,
+                                          decoded,
+                                          chunkShape,
+                                          copy,
+                                          selection.outputShape,
+                                          descriptor.dataType,
+                                          descriptor.fillValue
+                                        ),
+                                        metrics,
+                                        consume
+                                      ).flatMap:
+                                        case Left(error) => Future.successful(Left(error))
+                                        case Right(found) if found.stopped =>
+                                          Future.successful(Right(found))
+                                        case Right(found) =>
+                                          processInner(
+                                            shard,
+                                            found.state,
+                                            indexInShard + 1,
+                                            decodedShard
+                                          )
+              case _ =>
+                Future.successful(
+                  Left(ZarrError.InvalidSelection("fragment plan contains a non-factored copy"))
+                )
+
+        def loopShards(
+            shardIndex: Int,
+            state: S
+        ): Future[Either[ZarrError, FragmentFoldResult[S]]] =
+          if shardIndex >= grouped.shards.length then
+            Future.successful(Right(FragmentFoldResult(state, metrics.result(completed = true))))
+          else
+            val shard = grouped.shards(shardIndex)
+            chunkStoreKey(shard.coordinate) match
+              case Left(error) => Future.successful(Left(error))
+              case Right(key)  =>
+                metrics.objectRequests += 1
+                store
+                  .readAll(key, limits.maxEncodedObjectBytes)
+                  .flatMap:
+                    case Left(StoreError.NotFound(_)) =>
+                      processInner(shard, state, 0, None).flatMap:
+                        case Left(error)                   => Future.successful(Left(error))
+                        case Right(found) if found.stopped =>
+                          Future.successful(
+                            Right(
+                              FragmentFoldResult(found.state, metrics.result(completed = false))
+                            )
+                          )
+                        case Right(found) => loopShards(shardIndex + 1, found.state)
+                    case Left(error)    => Future.successful(Left(ZarrError.StoreFailure(error)))
+                    case Right(encoded) =>
+                      metrics.dataBytesRead += encoded.byteCount.toLong
+                      decodeWholeShard(
+                        encoded,
+                        sharded,
+                        indexCodecs,
+                        location,
+                        outerCodecs,
+                        limits
+                      ).flatMap:
+                        case Left(error)         => Future.successful(Left(error))
+                        case Right(decodedShard) =>
+                          processInner(shard, state, 0, Some(decodedShard)).flatMap:
+                            case Left(error)                   => Future.successful(Left(error))
+                            case Right(found) if found.stopped =>
+                              Future.successful(
+                                Right(
+                                  FragmentFoldResult(
+                                    found.state,
+                                    metrics.result(completed = false)
+                                  )
+                                )
+                              )
+                            case Right(found) => loopShards(shardIndex + 1, found.state)
+        loopShards(0, initial)
+
   private def foldShardedFragments[S](
       selection: FactoredSelection,
       initial: S,
       sharded: ShardedGrid,
       innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
       limits: ReadLimits,
       consume: (S, ChunkFragment) => Future[Either[ZarrError, FragmentControl[S]]]
@@ -324,6 +500,7 @@ final class AsyncOpenedArray private[zarr4s] (
                 fetchShardIndex(
                   shard,
                   sharded,
+                  indexCodecs,
                   location,
                   limits,
                   metrics
@@ -358,6 +535,7 @@ final class AsyncOpenedArray private[zarr4s] (
   private def fetchShardIndex(
       shard: ShardDemand,
       sharded: ShardedGrid,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
       limits: ReadLimits,
       metrics: FragmentMetrics
@@ -367,6 +545,7 @@ final class AsyncOpenedArray private[zarr4s] (
       ShardIndexReadPlan(
         single,
         sharded.innerChunksPerShard,
+        indexCodecs,
         location,
         descriptor.chunkKeyEncoding,
         objectLengths,
@@ -385,18 +564,35 @@ final class AsyncOpenedArray private[zarr4s] (
                   metrics.rangeRequests += 1
                   store
                     .read(key, read.range)
-                    .map:
-                      case Left(StoreError.NotFound(_)) => Right(None)
-                      case Left(error)                  => Left(ZarrError.StoreFailure(error))
-                      case Right(bytes)                 =>
+                    .flatMap:
+                      case Left(StoreError.NotFound(_)) => Future.successful(Right(None))
+                      case Left(error)                  =>
+                        Future.successful(Left(ZarrError.StoreFailure(error)))
+                      case Right(bytes) =>
                         metrics.indexBytesRead += bytes.byteCount.toLong
-                        ShardIndexCodec
-                          .decode(
-                            bytes,
-                            sharded.innerChunksPerShard,
-                            limits.shardIndex
-                          )
-                          .map(Some.apply)
+                        indexCodecs.rawLength(
+                          sharded.innerChunksPerShard,
+                          limits.shardIndex
+                        ) match
+                          case Left(error)      => Future.successful(Left(error))
+                          case Right(rawLength) =>
+                            runtime
+                              .decodeBytes(
+                                bytes,
+                                indexCodecs.byteCodecs,
+                                Some(rawLength),
+                                limits.decode
+                              )
+                              .map:
+                                case Left(error) => Left(error)
+                                case Right(raw)  =>
+                                  ShardIndexCodec
+                                    .decodeRaw(
+                                      raw,
+                                      sharded.innerChunksPerShard,
+                                      limits.shardIndex
+                                    )
+                                    .map(Some.apply)
 
     if location == IndexLocation.Start then fetch(Map.empty)
     else
@@ -548,25 +744,18 @@ final class AsyncOpenedArray private[zarr4s] (
         descriptor.layout match
           case PhysicalLayout.Direct(codecs) =>
             readDirect(selection, outputShape, builder, codecs, limits)
-          case PhysicalLayout.Sharded(sharded, innerCodecs, _, location, outerCodecs) =>
-            if outerCodecs.nonEmpty then
-              Future.successful(
-                Left(
-                  ZarrError.UnsupportedRead(
-                    "outer codecs after sharding_indexed prevent bounded partial reads"
-                  )
-                )
-              )
-            else
-              readSharded(
-                selection,
-                outputShape,
-                builder,
-                sharded,
-                innerCodecs,
-                location,
-                limits
-              )
+          case PhysicalLayout.Sharded(sharded, innerCodecs, indexCodecs, location, outerCodecs) =>
+            readSharded(
+              selection,
+              outputShape,
+              builder,
+              sharded,
+              innerCodecs,
+              indexCodecs,
+              location,
+              outerCodecs,
+              limits
+            )
 
   private final case class DirectFetch(
       demand: ChunkDemand,
@@ -684,7 +873,9 @@ final class AsyncOpenedArray private[zarr4s] (
       builder: PrimitiveBlockBuilder,
       sharded: ShardedGrid,
       innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
+      outerCodecs: CodecProgram,
       limits: ReadLimits
   ): Future[Either[ZarrError, ReadResult]] =
     val planned = for
@@ -703,6 +894,19 @@ final class AsyncOpenedArray private[zarr4s] (
             )
           )
         )
+      case Right((innerPlan, grouped)) if outerCodecs.nonEmpty =>
+        readWholeShards(
+          grouped,
+          outputShape,
+          builder,
+          sharded,
+          innerCodecs,
+          indexCodecs,
+          location,
+          outerCodecs,
+          limits,
+          innerPlan.stats.requestedElements
+        )
       case Right((innerPlan, grouped)) =>
         fetchLengths(grouped, location, limits).flatMap:
           case Left(error)    => Future.successful(Left(error))
@@ -720,6 +924,7 @@ final class AsyncOpenedArray private[zarr4s] (
             ShardIndexReadPlan(
               presentPlan,
               sharded.innerChunksPerShard,
+              indexCodecs,
               location,
               descriptor.chunkKeyEncoding,
               objectLengths.toMap,
@@ -731,79 +936,318 @@ final class AsyncOpenedArray private[zarr4s] (
                   case Left(error)         => Future.successful(Left(error))
                   case Right(indexFetches) =>
                     val indexes = mutable.Map.empty[Vector[Long], ShardIndex]
-                    var indexBytes = 0L
-                    var decodeError: Option[ZarrError] = None
-                    indexFetches.foreach: fetched =>
+                    val indexBytes = indexFetches.collect { case IndexFetch(_, Some(bytes)) =>
+                      bytes.byteCount.toLong
+                    }.sum
+                    val decodedIndexes = AsyncBatch.traverseBounded(
+                      indexFetches,
+                      limits.maxConcurrentRequests
+                    ): fetched =>
                       fetched.bytes match
-                        case None => missing += fetched.read.shardCoordinate.toVector
-                        case Some(bytes) if decodeError.isEmpty =>
-                          indexBytes += bytes.byteCount.toLong
-                          ShardIndexCodec.decode(
-                            bytes,
+                        case None =>
+                          Future.successful(
+                            Right(None: Option[(Vector[Long], ShardIndex)])
+                          )
+                        case Some(bytes) =>
+                          indexCodecs.rawLength(
                             sharded.innerChunksPerShard,
                             limits.shardIndex
                           ) match
-                            case Left(error)  => decodeError = Some(error)
-                            case Right(index) =>
-                              indexes.update(fetched.read.shardCoordinate.toVector, index)
-                        case Some(_) => ()
-                    decodeError match
-                      case Some(error) => Future.successful(Left(error))
-                      case None        =>
-                        fillIndex(sharded.innerChunksPerShard, limits.shardIndex) match
-                          case Left(error) => Future.successful(Left(error))
-                          case Right(fill) =>
-                            grouped.shards.foreach: shard =>
-                              if missing.contains(shard.coordinate.toVector) then
-                                indexes.update(shard.coordinate.toVector, fill)
-                            ShardDataPlan.resolve(
-                              grouped,
-                              indexes.toMap,
-                              descriptor.chunkKeyEncoding
-                            ) match
-                              case Left(error) => Future.successful(Left(error))
-                              case Right(dataPlan) if dataPlan.rangeReads > limits.maxRanges =>
-                                Future.successful(
-                                  Left(
-                                    ZarrError.ResourceLimit(
-                                      "read ranges",
-                                      limits.maxRanges,
-                                      dataPlan.rangeReads
-                                    )
-                                  )
+                            case Left(error)      => Future.successful(Left(error))
+                            case Right(rawLength) =>
+                              runtime
+                                .decodeBytes(
+                                  bytes,
+                                  indexCodecs.byteCodecs,
+                                  Some(rawLength),
+                                  limits.decode
                                 )
-                              case Right(dataPlan) =>
-                                fetchAndDecodeData(
-                                  dataPlan,
-                                  outputShape,
-                                  builder,
-                                  sharded,
-                                  innerCodecs,
-                                  limits
-                                ).map:
-                                  case Left(error)                      => Left(error)
-                                  case Right((dataRequests, dataBytes)) =>
-                                    Right(
-                                      ReadResult(
-                                        builder.result(),
-                                        outputShape,
-                                        ExecutionReceipt(
-                                          (if location == IndexLocation.End then lengths.length
-                                           else 0) +
-                                            indexFetches.length + dataRequests,
-                                          indexFetches.length + dataRequests,
-                                          if location == IndexLocation.End then lengths.length
-                                          else 0,
-                                          indexBytes + dataBytes,
-                                          indexBytes,
-                                          dataBytes,
-                                          grouped.touchedInnerChunks,
-                                          grouped.touchedShards,
-                                          innerPlan.stats.requestedElements,
-                                          descriptor.dataType.byteWidth
+                                .map:
+                                  case Left(error) => Left(error)
+                                  case Right(raw)  =>
+                                    ShardIndexCodec
+                                      .decodeRaw(
+                                        raw,
+                                        sharded.innerChunksPerShard,
+                                        limits.shardIndex
+                                      )
+                                      .map(index =>
+                                        Some(
+                                          fetched.read.shardCoordinate.toVector -> index
                                         )
                                       )
+                    decodedIndexes.flatMap: decoded =>
+                      firstError(decoded) match
+                        case Some(error) => Future.successful(Left(error))
+                        case None        =>
+                          var decodedIndex = 0
+                          while decodedIndex < decoded.length do
+                            decoded(decodedIndex) match
+                              case Right(None) =>
+                                missing += indexFetches(decodedIndex).read.shardCoordinate.toVector
+                              case Right(Some((coordinate, index))) =>
+                                indexes.update(coordinate, index)
+                              case Left(_) => ()
+                            decodedIndex += 1
+                          fillIndex(sharded.innerChunksPerShard, limits.shardIndex) match
+                            case Left(error) => Future.successful(Left(error))
+                            case Right(fill) =>
+                              grouped.shards.foreach: shard =>
+                                if missing.contains(shard.coordinate.toVector) then
+                                  indexes.update(shard.coordinate.toVector, fill)
+                              ShardDataPlan.resolve(
+                                grouped,
+                                indexes.toMap,
+                                descriptor.chunkKeyEncoding
+                              ) match
+                                case Left(error) => Future.successful(Left(error))
+                                case Right(dataPlan) if dataPlan.rangeReads > limits.maxRanges =>
+                                  Future.successful(
+                                    Left(
+                                      ZarrError.ResourceLimit(
+                                        "read ranges",
+                                        limits.maxRanges,
+                                        dataPlan.rangeReads
+                                      )
                                     )
+                                  )
+                                case Right(dataPlan) =>
+                                  fetchAndDecodeData(
+                                    dataPlan,
+                                    outputShape,
+                                    builder,
+                                    sharded,
+                                    innerCodecs,
+                                    limits
+                                  ).map:
+                                    case Left(error)                      => Left(error)
+                                    case Right((dataRequests, dataBytes)) =>
+                                      Right(
+                                        ReadResult(
+                                          builder.result(),
+                                          outputShape,
+                                          ExecutionReceipt(
+                                            (if location == IndexLocation.End then lengths.length
+                                             else 0) +
+                                              indexFetches.length + dataRequests,
+                                            indexFetches.length + dataRequests,
+                                            if location == IndexLocation.End then lengths.length
+                                            else 0,
+                                            indexBytes + dataBytes,
+                                            indexBytes,
+                                            dataBytes,
+                                            grouped.touchedInnerChunks,
+                                            grouped.touchedShards,
+                                            innerPlan.stats.requestedElements,
+                                            descriptor.dataType.byteWidth
+                                          )
+                                        )
+                                      )
+
+  private def readWholeShards(
+      grouped: ShardReadPlan,
+      outputShape: Shape,
+      builder: PrimitiveBlockBuilder,
+      sharded: ShardedGrid,
+      innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
+      location: IndexLocation,
+      outerCodecs: CodecProgram,
+      limits: ReadLimits,
+      requestedElements: Long
+  ): Future[Either[ZarrError, ReadResult]] =
+    def loop(
+        shardIndex: Int,
+        objectRequests: Int,
+        bytesRead: Long
+    ): Future[Either[ZarrError, ReadResult]] =
+      if shardIndex >= grouped.shards.length then
+        Future.successful(
+          Right(
+            ReadResult(
+              builder.result(),
+              outputShape,
+              ExecutionReceipt(
+                objectRequests,
+                0,
+                0,
+                bytesRead,
+                0L,
+                bytesRead,
+                grouped.touchedInnerChunks,
+                grouped.touchedShards,
+                requestedElements,
+                descriptor.dataType.byteWidth
+              )
+            )
+          )
+        )
+      else
+        val shard = grouped.shards(shardIndex)
+        chunkStoreKey(shard.coordinate) match
+          case Left(error) => Future.successful(Left(error))
+          case Right(key)  =>
+            store
+              .readAll(key, limits.maxEncodedObjectBytes)
+              .flatMap:
+                case Left(StoreError.NotFound(_)) =>
+                  loop(shardIndex + 1, objectRequests + 1, bytesRead)
+                case Left(error)    => Future.successful(Left(ZarrError.StoreFailure(error)))
+                case Right(encoded) =>
+                  decodeWholeShard(
+                    encoded,
+                    sharded,
+                    indexCodecs,
+                    location,
+                    outerCodecs,
+                    limits
+                  ).flatMap:
+                    case Left(error)         => Future.successful(Left(error))
+                    case Right((raw, index)) =>
+                      def innerLoop(indexInShard: Int): Future[Either[ZarrError, Unit]] =
+                        if indexInShard >= shard.innerChunks.length then
+                          Future.successful(Right(()))
+                        else
+                          val inner = shard.innerChunks(indexInShard)
+                          index.entry(inner.localCoordinate) match
+                            case Left(error)                 => Future.successful(Left(error))
+                            case Right(ShardIndexEntry.Fill) => innerLoop(indexInShard + 1)
+                            case Right(ShardIndexEntry.Present(offset, length)) =>
+                              wholeShardChunk(raw, offset, length, limits) match
+                                case Left(error)         => Future.successful(Left(error))
+                                case Right(encodedChunk) =>
+                                  val global = globalInnerCoordinate(
+                                    shard.coordinate,
+                                    inner.localCoordinate,
+                                    sharded
+                                  )
+                                  ChunkGeometry.storedShape(
+                                    sharded.globalInnerGrid,
+                                    global
+                                  ) match
+                                    case Left(error)       => Future.successful(Left(error))
+                                    case Right(chunkShape) =>
+                                      runtime
+                                        .decode(
+                                          encodedChunk,
+                                          innerCodecs,
+                                          descriptor.dataType,
+                                          chunkShape,
+                                          limits.decode
+                                        )
+                                        .flatMap:
+                                          case Left(error)    => Future.successful(Left(error))
+                                          case Right(decoded) =>
+                                            PrimitiveBlockBuilder
+                                              .applyCopy(
+                                                builder,
+                                                decoded,
+                                                chunkShape,
+                                                outputShape,
+                                                inner.copy
+                                              ) match
+                                              case Left(error) => Future.successful(Left(error))
+                                              case Right(_)    => innerLoop(indexInShard + 1)
+                      innerLoop(0).flatMap:
+                        case Left(error) => Future.successful(Left(error))
+                        case Right(_)    =>
+                          loop(
+                            shardIndex + 1,
+                            objectRequests + 1,
+                            bytesRead + encoded.byteCount.toLong
+                          )
+    loop(0, 0, 0L)
+
+  private def decodeWholeShard(
+      encoded: OwnedBytes,
+      sharded: ShardedGrid,
+      indexCodecs: ShardIndexProgram,
+      location: IndexLocation,
+      outerCodecs: CodecProgram,
+      limits: ReadLimits
+  ): Future[Either[ZarrError, (OwnedBytes, ShardIndex)]] =
+    val shardDecodeLimits = DecodeLimits(
+      ByteCount.unsafe(math.min(limits.shardIndex.maxShardBytes.toLong, Int.MaxValue.toLong))
+    )
+    runtime
+      .decodeBytes(encoded, outerCodecs, None, shardDecodeLimits)
+      .flatMap:
+        case Left(error) => Future.successful(Left(error))
+        case Right(raw) if raw.byteCount.toLong > limits.shardIndex.maxShardBytes.toLong =>
+          Future.successful(
+            Left(
+              ZarrError.ResourceLimit(
+                "decoded shard bytes",
+                limits.shardIndex.maxShardBytes.toLong,
+                raw.byteCount.toLong
+              )
+            )
+          )
+        case Right(raw) =>
+          indexCodecs.encodedLength(sharded.innerChunksPerShard, limits.shardIndex) match
+            case Left(error) => Future.successful(Left(error))
+            case Right(indexLength) if indexLength.toLong > raw.byteCount.toLong =>
+              Future.successful(
+                Left(
+                  ZarrError.InvalidSelection(
+                    s"decoded shard length ${raw.byteCount.toLong} is shorter than its ${indexLength.toLong}-byte index"
+                  )
+                )
+              )
+            case Right(indexLength) =>
+              val indexOffset = location match
+                case IndexLocation.Start => 0
+                case IndexLocation.End   => raw.length - indexLength.toLong.toInt
+              val encodedIndex = raw.slice(indexOffset, indexOffset + indexLength.toLong.toInt)
+              indexCodecs.rawLength(sharded.innerChunksPerShard, limits.shardIndex) match
+                case Left(error)      => Future.successful(Left(error))
+                case Right(rawLength) =>
+                  runtime
+                    .decodeBytes(
+                      encodedIndex,
+                      indexCodecs.byteCodecs,
+                      Some(rawLength),
+                      limits.decode
+                    )
+                    .map:
+                      case Left(error)     => Left(error)
+                      case Right(rawIndex) =>
+                        ShardIndexCodec
+                          .decodeRaw(rawIndex, sharded.innerChunksPerShard, limits.shardIndex)
+                          .map(index => raw -> index)
+
+  private def wholeShardChunk(
+      raw: OwnedBytes,
+      offset: Long,
+      length: ByteCount,
+      limits: ReadLimits
+  ): Either[ZarrError, OwnedBytes] =
+    if length.toLong > limits.maxEncodedObjectBytes.toLong then
+      Left(
+        ZarrError.ResourceLimit(
+          "encoded chunk bytes",
+          limits.maxEncodedObjectBytes.toLong,
+          length.toLong
+        )
+      )
+    else if offset > Int.MaxValue.toLong || length.toLong > Int.MaxValue.toLong then
+      Left(
+        ZarrError.ResourceLimit(
+          "materialized shard chunk",
+          Int.MaxValue,
+          math.max(offset, length.toLong)
+        )
+      )
+    else
+      LongArrays.checkedAdd(offset, length.toLong, "shard chunk end") match
+        case Left(error)                              => Left(error)
+        case Right(end) if end > raw.byteCount.toLong =>
+          Left(
+            ZarrError.InvalidSelection(
+              s"shard chunk range [$offset, $end) exceeds decoded shard length ${raw.byteCount.toLong}"
+            )
+          )
+        case Right(end) => Right(raw.slice(offset.toInt, end.toInt))
 
   private def fetchLengths(
       grouped: ShardReadPlan,

@@ -42,6 +42,25 @@ object JvmZstd extends SyncByteCodecExecutor:
         else DecodedLength.validate(OwnedBytes.unsafe(output), expectedDecoded, limits)
       catch case NonFatal(error) => Left(corrupt(error))
 
+  override def decodeBounded(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      limits: DecodeLimits
+  ): Either[CodecError, OwnedBytes] = codec match
+    case found: ZstdCodec =>
+      try
+        val declared = Zstd.decompressedSize(encoded.toArray)
+        if declared <= 0L then
+          Left(CodecError.CorruptData(name, "zstd frame does not declare a decoded size"))
+        else if declared > limits.maxDecodedBytes.toLong then
+          Left(CodecError.DecodedLimitExceeded(limits.maxDecodedBytes.toLong, declared))
+        else if declared > Int.MaxValue.toLong then
+          Left(CodecError.DecodedLimitExceeded(Int.MaxValue.toLong, declared))
+        else decode(found, encoded, ByteCount.unsafe(declared), limits)
+      catch case NonFatal(error) => Left(corrupt(error))
+    case found =>
+      Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+
   def encode(decoded: OwnedBytes, codec: ZstdCodec): Either[CodecError, OwnedBytes] =
     try
       val source = decoded.toArray

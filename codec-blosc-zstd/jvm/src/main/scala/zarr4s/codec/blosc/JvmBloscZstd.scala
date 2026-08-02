@@ -32,6 +32,19 @@ object JvmBloscZstd extends SyncByteCodecExecutor:
         )
       )
 
+  override def decodeBounded(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      limits: DecodeLimits
+  ): Either[CodecError, OwnedBytes] = codec match
+    case found: BloscZstdCodec =>
+      BloscFrame
+        .declaredDecodedLength(encoded, limits)
+        .flatMap: expected =>
+          decode(found, encoded, expected, limits)
+    case found =>
+      Left(CodecError.CorruptData("blosc", s"executor received compiled codec ${found.name}"))
+
   def encode(
       codec: CompiledCodec,
       decoded: OwnedBytes

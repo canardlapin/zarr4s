@@ -1,6 +1,7 @@
 package zarr4s.codec.blosc
 
 import zarr4s.*
+import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
 
@@ -78,6 +79,60 @@ class BrowserBloscZstdSuite extends munit.FunSuite:
   test("Scala.js reads Python shuffled int16 despite its fixed-width encoder"):
     readShorts(BloscPythonFixtures.int16Objects).map: values =>
       assertEquals(values, BloscPythonFixtures.int16Values)
+
+  test("Scala.js provider writer publishes a v2 Blosc compressor"):
+    val descriptor = zvalue(BloscPythonFixtures.descriptor(BloscPythonFixtures.directMetadata))
+    val provider = new AsyncChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      )(using ExecutionContext): Future[Either[ZarrError, ChunkPayload]] =
+        Future.successful(
+          Right(
+            ChunkPayload.Values(
+              PrimitiveBlock.Float32(OwnedFloats.copyOf(BloscPythonFixtures.directValues.toArray))
+            )
+          )
+        )
+    val store = zvalue(AsyncMemoryStore(Map.empty))
+    AsyncZarrWriter
+      .create(
+        store,
+        descriptor,
+        provider,
+        runtime = BrowserBloscZstdRuntime.portable,
+        format = ZarrFormat.V2
+      )
+      .flatMap:
+        case WriteOutcome.Incomplete(_, error) => fail(error.message)
+        case WriteOutcome.Complete(receipt)    =>
+          assertEquals(store.writeTrace.map(_.key.value), Vector(".zattrs", "0/0", ".zarray"))
+          assertEquals(receipt.metadata.key.value, ".zarray")
+          BrowserZarr
+            .openArray(
+              store,
+              capabilities = BloscZstdProvider.capabilities(),
+              runtime = BrowserBloscZstdRuntime.portable
+            )
+            .flatMap:
+              case Left(error)   => fail(error.message)
+              case Right(opened) =>
+                val region = zvalue(
+                  Region.within(
+                    descriptor.shape,
+                    zvalue(Coordinate(0L, 0L)),
+                    descriptor.shape
+                  )
+                )
+                opened
+                  .readRegion(region)
+                  .map:
+                    case Left(error)   => fail(error.message)
+                    case Right(result) =>
+                      result.block match
+                        case PrimitiveBlock.Float32(values) =>
+                          assertEquals(values.toArray.toVector, BloscPythonFixtures.directValues)
+                        case _ => fail("expected int16 result")
 
   private def zcodec(
       level: Int,

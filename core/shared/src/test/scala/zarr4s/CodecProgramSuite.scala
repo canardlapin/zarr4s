@@ -70,7 +70,7 @@ class CodecProgramSuite extends munit.FunSuite:
     )
     assertEquals(program.executorRequirements, Vector("filter"))
 
-  test("shard index program admits only little-endian uint64 bytes plus CRC32C"):
+  test("shard index program admits little-endian bytes and fixed-size stages"):
     val valid = ShardIndexProgram.compile(
       Vector(
         BytesCodec(Some(Endianness.Little)),
@@ -95,7 +95,19 @@ class CodecProgramSuite extends munit.FunSuite:
       ShardIndexProgram
         .compile(
           Vector(
-            BytesCodec(Some(Endianness.Little))
+            BytesCodec(Some(Endianness.Little)),
+            ShuffleCodec(8),
+            Crc32cCodec
+          )
+        )
+        .isRight
+    )
+    assert(
+      ShardIndexProgram
+        .compile(
+          Vector(
+            BytesCodec(Some(Endianness.Little)),
+            GzipCodec(1)
           )
         )
         .isLeft

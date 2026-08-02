@@ -53,3 +53,44 @@ class JvmZlibSuite extends munit.FunSuite:
       case PrimitiveBlock.Int16(values) =>
         assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
       case _ => fail("expected int16 result")
+
+  test("JVM writer publishes a v2 zlib compressor"):
+    val descriptor = zvalue(
+      ZarrMetadata
+        .parse(
+          """{"zarr_format":3,"node_type":"array","shape":[2,3],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,3]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"zlib","configuration":{"level":1}}],"attributes":{},"storage_transformers":[]}"""
+        )
+        .flatMap:
+          case ZarrNodeMetadata.Array(array) => ArrayDescriptor.compile(array)
+          case _                             => Left(ZarrError.UnsupportedNodeType("group"))
+    )
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] =
+        Right(
+          ChunkPayload.Values(
+            PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, -2, 300, 4, 5, -6)))
+          )
+        )
+    val store = zvalue(MemoryStore(Map.empty))
+    val outcome = SyncZarrWriter.create(
+      store,
+      descriptor,
+      provider,
+      runtime = JvmCodecRuntime.portable,
+      format = ZarrFormat.V2
+    )
+    val receipt = outcome match
+      case WriteOutcome.Complete(found)      => found
+      case WriteOutcome.Incomplete(_, error) => fail(error.message)
+    assertEquals(store.writeTrace.map(_.key.value), Vector(".zattrs", "0/0", ".zarray"))
+    assertEquals(receipt.metadata.key.value, ".zarray")
+    val opened = zvalue(SyncZarr.openArray(store, runtime = JvmCodecRuntime.portable))
+    val region =
+      zvalue(Region.within(descriptor.shape, zvalue(Coordinate(0L, 0L)), descriptor.shape))
+    zvalue(opened.readRegion(region)).block match
+      case PrimitiveBlock.Int16(values) =>
+        assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
+      case _ => fail("expected int16 result")

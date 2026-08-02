@@ -95,7 +95,7 @@ object ShardIndexCodec:
   private val entryBytes = 16L
   private val checksumBytes = 4L
 
-  def encodedLength(
+  def rawEncodedLength(
       innerGridShape: Shape,
       limits: ShardIndexLimits = ShardIndexLimits()
   ): Either[ZarrError, ByteCount] =
@@ -105,35 +105,108 @@ object ShardIndexCodec:
         if entries <= limits.maxEntries.toLong then Right(())
         else Left(ZarrError.ResourceLimit("shard index entries", limits.maxEntries, entries))
       payload <- LongArrays.checkedMultiply(entries, entryBytes, "shard index byte length")
-      total <- LongArrays.checkedAdd(payload, checksumBytes, "shard index byte length")
+      _ <-
+        if payload <= limits.maxIndexBytes.toLong then Right(())
+        else
+          Left(ZarrError.ResourceLimit("shard index bytes", limits.maxIndexBytes.toLong, payload))
+      count <- ByteCount(payload)
+    yield count
+
+  def encodedLength(
+      innerGridShape: Shape,
+      limits: ShardIndexLimits = ShardIndexLimits()
+  ): Either[ZarrError, ByteCount] =
+    for
+      payload <- rawEncodedLength(innerGridShape, limits)
+      total <- LongArrays.checkedAdd(payload.toLong, checksumBytes, "shard index byte length")
       _ <-
         if total <= limits.maxIndexBytes.toLong then Right(())
         else Left(ZarrError.ResourceLimit("shard index bytes", limits.maxIndexBytes.toLong, total))
       count <- ByteCount(total)
     yield count
 
+  def encodeRaw(
+      index: ShardIndex,
+      limits: ShardIndexLimits = ShardIndexLimits()
+  ): Either[ZarrError, OwnedBytes] = rawEncodedLength(index.innerGridShape, limits).flatMap:
+    length =>
+      if length.toLong > Int.MaxValue.toLong then
+        Left(ZarrError.ResourceLimit("materialized index bytes", Int.MaxValue, length.toLong))
+      else
+        val bytes = new Array[Byte](length.toLong.toInt)
+        var entryIndex = 0
+        while entryIndex < index.entries.length do
+          val offset = entryIndex * 16
+          index.entries(entryIndex) match
+            case ShardIndexEntry.Fill =>
+              putUInt64Max(bytes, offset)
+              putUInt64Max(bytes, offset + 8)
+            case ShardIndexEntry.Present(chunkOffset, chunkLength) =>
+              putLittleEndianUInt64(bytes, offset, chunkOffset)
+              putLittleEndianUInt64(bytes, offset + 8, chunkLength.toLong)
+          entryIndex += 1
+        Right(OwnedBytes.unsafe(bytes))
+
   def encode(
       index: ShardIndex,
       limits: ShardIndexLimits = ShardIndexLimits()
-  ): Either[ZarrError, OwnedBytes] = encodedLength(index.innerGridShape, limits).flatMap: length =>
-    if length.toLong > Int.MaxValue.toLong then
-      Left(ZarrError.ResourceLimit("materialized index bytes", Int.MaxValue, length.toLong))
-    else
-      val bytes = new Array[Byte](length.toLong.toInt)
-      var entryIndex = 0
-      while entryIndex < index.entries.length do
-        val offset = entryIndex * 16
-        index.entries(entryIndex) match
-          case ShardIndexEntry.Fill =>
-            putUInt64Max(bytes, offset)
-            putUInt64Max(bytes, offset + 8)
-          case ShardIndexEntry.Present(chunkOffset, chunkLength) =>
-            putLittleEndianUInt64(bytes, offset, chunkOffset)
-            putLittleEndianUInt64(bytes, offset + 8, chunkLength.toLong)
-        entryIndex += 1
-      val payloadLength = bytes.length - 4
-      Crc32c.putLittleEndianUInt32(bytes, payloadLength, Crc32c.checksum(bytes, 0, payloadLength))
-      Right(OwnedBytes.unsafe(bytes))
+  ): Either[ZarrError, OwnedBytes] =
+    for
+      raw <- encodeRaw(index, limits)
+      _ <-
+        if raw.byteCount.toLong + checksumBytes <= Int.MaxValue.toLong then Right(())
+        else
+          Left(
+            ZarrError.ResourceLimit(
+              "materialized index bytes",
+              Int.MaxValue,
+              raw.byteCount.toLong + checksumBytes
+            )
+          )
+      bytes = new Array[Byte](raw.length + checksumBytes.toInt)
+      _ = Array.copy(raw.values, 0, bytes, 0, raw.length)
+      _ = Crc32c.putLittleEndianUInt32(bytes, raw.length, Crc32c.checksum(raw))
+    yield OwnedBytes.unsafe(bytes)
+
+  def decodeRaw(
+      encoded: OwnedBytes,
+      innerGridShape: Shape,
+      limits: ShardIndexLimits = ShardIndexLimits()
+  ): Either[ZarrError, ShardIndex] = rawEncodedLength(innerGridShape, limits) match
+    case Left(error)     => Left(error)
+    case Right(expected) =>
+      if encoded.byteCount != expected then
+        Left(
+          ZarrError.InvalidSelection(
+            s"raw shard index length must be ${expected.toLong}, found ${encoded.byteCount.toLong}"
+          )
+        )
+      else
+        val entries = Vector.newBuilder[ShardIndexEntry]
+        var offset = 0
+        while offset < encoded.length do
+          val chunkOffset = getLittleEndianUInt64(encoded.values, offset)
+          val chunkLength = getLittleEndianUInt64(encoded.values, offset + 8)
+          (chunkOffset, chunkLength) match
+            case (UInt64.Max, UInt64.Max)          => entries += ShardIndexEntry.Fill
+            case (UInt64.Max, _) | (_, UInt64.Max) =>
+              return Left(
+                ZarrError.InvalidSelection(
+                  s"partial fill sentinel in shard index entry ${offset / 16}"
+                )
+              )
+            case (UInt64.TooLarge, _) | (_, UInt64.TooLarge) =>
+              return Left(
+                ZarrError.ResourceLimit(
+                  "unsigned shard index value",
+                  Long.MaxValue,
+                  Long.MaxValue
+                )
+              )
+            case (UInt64.Value(foundOffset), UInt64.Value(foundLength)) =>
+              entries += ShardIndexEntry.Present(foundOffset, ByteCount.unsafe(foundLength))
+          offset += 16
+        ShardIndex(innerGridShape, entries.result(), limits)
 
   def decode(
       encoded: OwnedBytes,
@@ -151,32 +224,7 @@ object ShardIndexCodec:
       else
         Crc32c.verifyAndStrip(encoded) match
           case Left(error)    => Left(ZarrError.InvalidSelection(error.message))
-          case Right(payload) =>
-            val entries = Vector.newBuilder[ShardIndexEntry]
-            var offset = 0
-            while offset < payload.length do
-              val chunkOffset = getLittleEndianUInt64(payload.values, offset)
-              val chunkLength = getLittleEndianUInt64(payload.values, offset + 8)
-              (chunkOffset, chunkLength) match
-                case (UInt64.Max, UInt64.Max)          => entries += ShardIndexEntry.Fill
-                case (UInt64.Max, _) | (_, UInt64.Max) =>
-                  return Left(
-                    ZarrError.InvalidSelection(
-                      s"partial fill sentinel in shard index entry ${offset / 16}"
-                    )
-                  )
-                case (UInt64.TooLarge, _) | (_, UInt64.TooLarge) =>
-                  return Left(
-                    ZarrError.ResourceLimit(
-                      "unsigned shard index value",
-                      Long.MaxValue,
-                      Long.MaxValue
-                    )
-                  )
-                case (UInt64.Value(foundOffset), UInt64.Value(foundLength)) =>
-                  entries += ShardIndexEntry.Present(foundOffset, ByteCount.unsafe(foundLength))
-              offset += 16
-            ShardIndex(innerGridShape, entries.result(), limits)
+          case Right(payload) => decodeRaw(payload, innerGridShape, limits)
 
   private enum UInt64:
     case Max
@@ -339,12 +387,44 @@ object ShardIndexReadPlan:
   def apply(
       plan: ShardReadPlan,
       innerGridShape: Shape,
+      indexCodecs: ShardIndexProgram,
+      location: IndexLocation,
+      keyEncoding: ChunkKeyEncoding,
+      objectLengths: Map[Vector[Long], Long],
+      limits: ShardIndexLimits
+  ): Either[ZarrError, ShardIndexReadPlan] =
+    applyWithLength(
+      plan,
+      indexCodecs.encodedLength(innerGridShape, limits),
+      location,
+      keyEncoding,
+      objectLengths
+    )
+
+  def apply(
+      plan: ShardReadPlan,
+      innerGridShape: Shape,
       location: IndexLocation,
       keyEncoding: ChunkKeyEncoding,
       objectLengths: Map[Vector[Long], Long] = Map.empty,
       limits: ShardIndexLimits = ShardIndexLimits()
   ): Either[ZarrError, ShardIndexReadPlan] =
-    ShardIndexCodec.encodedLength(innerGridShape, limits) match
+    applyWithLength(
+      plan,
+      ShardIndexCodec.encodedLength(innerGridShape, limits),
+      location,
+      keyEncoding,
+      objectLengths
+    )
+
+  private def applyWithLength(
+      plan: ShardReadPlan,
+      lengthResult: Either[ZarrError, ByteCount],
+      location: IndexLocation,
+      keyEncoding: ChunkKeyEncoding,
+      objectLengths: Map[Vector[Long], Long]
+  ): Either[ZarrError, ShardIndexReadPlan] =
+    lengthResult match
       case Left(error)        => Left(error)
       case Right(indexLength) =>
         val reads = Vector.newBuilder[IndexRangeRead]

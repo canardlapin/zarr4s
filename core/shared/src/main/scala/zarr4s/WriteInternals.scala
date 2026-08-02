@@ -1,29 +1,68 @@
 package zarr4s
 
 private[zarr4s] object WriteInternals:
+  def descriptorForWrite(
+      descriptor: ArrayDescriptor,
+      format: ZarrFormat
+  ): ArrayDescriptor = format match
+    case ZarrFormat.V3 => descriptor
+    case ZarrFormat.V2 =>
+      descriptor.copy(
+        chunkKeyEncoding = V2ChunkKeyEncoding(descriptor.chunkKeyEncoding.separator)
+      )
+
+  final case class MetadataObjects(
+      primary: (StoreKey, OwnedBytes),
+      prelude: Option[(StoreKey, OwnedBytes)]
+  ):
+    def primaryBytes: OwnedBytes = primary._2
+
   def arrayMetadata(
       descriptor: ArrayDescriptor,
       path: ZarrPath,
-      limits: WriterLimits
-  ): Either[ZarrError, (StoreKey, OwnedBytes)] =
-    ZarrMetadataRenderer
-      .array(descriptor)
-      .flatMap: rendered =>
-        metadata(rendered, path, limits)
+      limits: WriterLimits,
+      format: ZarrFormat = ZarrFormat.V3
+  ): Either[ZarrError, MetadataObjects] = format match
+    case ZarrFormat.V3 =>
+      ZarrMetadataRenderer
+        .array(descriptor)
+        .flatMap: rendered =>
+          metadata(rendered, path, "zarr.json", limits).map: primary =>
+            MetadataObjects(primary, None)
+    case ZarrFormat.V2 =>
+      for
+        primaryText <- ZarrMetadataRenderer.v2Array(descriptor)
+        attributesText <- ZarrMetadataRenderer.v2Attributes(descriptor)
+        primary <- metadata(primaryText, path, ".zarray", limits)
+        attributes <- metadata(attributesText, path, ".zattrs", limits)
+        _ <- validateMetadataBundle(primary, Some(attributes), limits)
+      yield MetadataObjects(primary, Some(attributes))
 
   def groupMetadata(
       group: GroupMetadata,
       path: ZarrPath,
-      limits: WriterLimits
-  ): Either[ZarrError, (StoreKey, OwnedBytes)] =
-    ZarrMetadataRenderer
-      .group(group)
-      .flatMap: rendered =>
-        metadata(rendered, path, limits)
+      limits: WriterLimits,
+      format: ZarrFormat = ZarrFormat.V3
+  ): Either[ZarrError, MetadataObjects] = format match
+    case ZarrFormat.V3 =>
+      ZarrMetadataRenderer
+        .group(group)
+        .flatMap: rendered =>
+          metadata(rendered, path, "zarr.json", limits).map: primary =>
+            MetadataObjects(primary, None)
+    case ZarrFormat.V2 =>
+      for
+        primaryText <- ZarrMetadataRenderer.v2Group(group)
+        attributesText <- ZarrMetadataRenderer.v2GroupAttributes(group)
+        primary <- metadata(primaryText, path, ".zgroup", limits)
+        attributes <- metadata(attributesText, path, ".zattrs", limits)
+        _ <- validateMetadataBundle(primary, Some(attributes), limits)
+      yield MetadataObjects(primary, Some(attributes))
 
   private def metadata(
       rendered: String,
       path: ZarrPath,
+      child: String,
       limits: WriterLimits
   ): Either[ZarrError, (StoreKey, OwnedBytes)] =
     val bytes = OwnedBytes.unsafe(rendered.getBytes("UTF-8"))
@@ -45,7 +84,21 @@ private[zarr4s] object WriteInternals:
           bytes.byteCount.toLong
         )
       )
-    else path.key("zarr.json").map(_ -> bytes)
+    else path.key(child).map(_ -> bytes)
+
+  private def validateMetadataBundle(
+      primary: (StoreKey, OwnedBytes),
+      prelude: Option[(StoreKey, OwnedBytes)],
+      limits: WriterLimits
+  ): Either[ZarrError, Unit] =
+    val count = 1L + prelude.fold(0L)(_ => 1L)
+    if count > limits.maxObjects.toLong then
+      Left(ZarrError.ResourceLimit("written objects", limits.maxObjects, count))
+    else
+      val total = primary._2.byteCount.toLong + prelude.fold(0L)(entry => entry._2.byteCount.toLong)
+      if total > limits.maxWrittenBytes.toLong then
+        Left(ZarrError.ResourceLimit("written bytes", limits.maxWrittenBytes.toLong, total))
+      else Right(())
 
   def resolve(path: ZarrPath, relative: StoreKey): Either[ZarrError, StoreKey] =
     path.key(relative.value)
@@ -99,15 +152,24 @@ private[zarr4s] object WriteInternals:
       axis += 1
     true
 
-  def assembleShard(
+  private[zarr4s] final case class PreparedShard(
+      chunks: Vector[Option[OwnedBytes]],
+      location: IndexLocation,
+      indexLength: ByteCount,
+      totalLength: ByteCount,
+      rawIndex: OwnedBytes
+  )
+
+  def prepareShard(
       chunks: Vector[Option[OwnedBytes]],
       innerChunksPerShard: Shape,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
       limits: WriterLimits
-  ): Either[ZarrError, Option[OwnedBytes]] =
+  ): Either[ZarrError, Option[PreparedShard]] =
     if chunks.forall(_.isEmpty) then Right(None)
     else
-      ShardIndexCodec
+      indexCodecs
         .encodedLength(innerChunksPerShard, limits.shardIndex)
         .flatMap: indexLength =>
           shardDataLength(chunks).flatMap: dataLength =>
@@ -128,27 +190,80 @@ private[zarr4s] object WriteInternals:
                   ShardIndex(innerChunksPerShard, entries.result(), limits.shardIndex).flatMap:
                     shardIndex =>
                       ShardIndexCodec
-                        .encode(shardIndex, limits.shardIndex)
-                        .map: encodedIndex =>
-                          val output = new Array[Byte](total.toInt)
-                          var position = 0
-                          if location == IndexLocation.Start then
-                            Array.copy(encodedIndex.values, 0, output, 0, encodedIndex.length)
-                            position = encodedIndex.length
-                          chunks.foreach:
-                            case None        => ()
-                            case Some(bytes) =>
-                              Array.copy(bytes.values, 0, output, position, bytes.length)
-                              position += bytes.length
-                          if location == IndexLocation.End then
-                            Array.copy(
-                              encodedIndex.values,
-                              0,
-                              output,
-                              position,
-                              encodedIndex.length
+                        .encodeRaw(shardIndex, limits.shardIndex)
+                        .map: rawIndex =>
+                          Some(
+                            PreparedShard(
+                              chunks,
+                              location,
+                              indexLength,
+                              ByteCount.unsafe(total),
+                              rawIndex
                             )
-                          Some(OwnedBytes.unsafe(output))
+                          )
+
+  def assemblePreparedShard(
+      prepared: PreparedShard,
+      encodedIndex: OwnedBytes
+  ): Either[ZarrError, OwnedBytes] =
+    if encodedIndex.byteCount != prepared.indexLength then
+      Left(
+        ZarrError.CodecFailure(
+          CodecError.InvalidEncodedLength(
+            prepared.indexLength.toLong,
+            encodedIndex.byteCount.toLong
+          )
+        )
+      )
+    else if prepared.totalLength.toLong > Int.MaxValue.toLong then
+      Left(
+        ZarrError.ResourceLimit(
+          "materialized shard bytes",
+          Int.MaxValue,
+          prepared.totalLength.toLong
+        )
+      )
+    else
+      val output = new Array[Byte](prepared.totalLength.toLong.toInt)
+      var position = 0
+      if prepared.location == IndexLocation.Start then
+        Array.copy(encodedIndex.values, 0, output, 0, encodedIndex.length)
+        position = encodedIndex.length
+      prepared.chunks.foreach:
+        case None        => ()
+        case Some(bytes) =>
+          Array.copy(bytes.values, 0, output, position, bytes.length)
+          position += bytes.length
+      if prepared.location == IndexLocation.End then
+        Array.copy(encodedIndex.values, 0, output, position, encodedIndex.length)
+      Right(OwnedBytes.unsafe(output))
+
+  def assembleShard(
+      chunks: Vector[Option[OwnedBytes]],
+      innerChunksPerShard: Shape,
+      indexCodecs: ShardIndexProgram,
+      location: IndexLocation,
+      outerCodecs: CodecProgram,
+      limits: WriterLimits,
+      runtime: SyncCodecRuntime
+  ): Either[ZarrError, Option[OwnedBytes]] =
+    prepareShard(chunks, innerChunksPerShard, indexCodecs, location, limits).flatMap:
+      case None           => Right(None)
+      case Some(prepared) =>
+        runtime
+          .encodeBytes(
+            prepared.rawIndex,
+            indexCodecs.byteCodecs,
+            limits.shardIndex.maxIndexBytes
+          )
+          .flatMap(encodedIndex => assemblePreparedShard(prepared, encodedIndex))
+          .flatMap: unwrapped =>
+            runtime
+              .encodeBytes(unwrapped, outerCodecs, shardLimit(limits))
+              .map(Some.apply)
+
+  private[zarr4s] def shardLimit(limits: WriterLimits): ByteCount =
+    ByteCount.unsafe(math.min(limits.maxShardBytes.toLong, Int.MaxValue.toLong))
 
   private def shardDataLength(
       chunks: Vector[Option[OwnedBytes]]

@@ -11,6 +11,7 @@ object BloscWriterFixtureMain:
     Files.createDirectories(parent)
     writeDirect(parent.resolve("scala-blosc-direct.zarr"))
     writeSharded(parent.resolve("scala-blosc-sharded.zarr"))
+    writeV2(parent.resolve("scala-blosc-v2.zarr"))
 
   private def writeDirect(target: Path): Unit =
     val values = Array[Float](1.25f, -2.5f, 300.0f, 4.5f, 5.75f, -6.0f)
@@ -38,6 +39,21 @@ object BloscWriterFixtureMain:
         Right(ChunkPayload.Values(float32(chunks(index))))
     write(target, descriptor(BloscPythonFixtures.shardedMetadata), provider)
 
+  private def writeV2(target: Path): Unit =
+    val values = Array[Float](1.25f, -2.5f, 300.0f, 4.5f, 5.75f, -6.0f)
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] =
+        Right(ChunkPayload.Values(float32(values)))
+    write(
+      target,
+      descriptor(BloscPythonFixtures.directMetadata),
+      provider,
+      format = ZarrFormat.V2
+    )
+
   private def descriptor(metadata: String): ArrayDescriptor =
     BloscPythonFixtures.descriptor(metadata) match
       case Right(found) => found
@@ -49,12 +65,14 @@ object BloscWriterFixtureMain:
   private def write(
       target: Path,
       descriptor: ArrayDescriptor,
-      provider: ChunkProvider
+      provider: ChunkProvider,
+      format: ZarrFormat = ZarrFormat.V3
   ): Unit = JvmZarrWriter.create(
     target,
     descriptor,
     provider,
-    runtime = JvmBloscZstdRuntime.portable
+    runtime = JvmBloscZstdRuntime.portable,
+    format = format
   ) match
     case Right(_)    => ()
     case Left(error) => throw new IllegalStateException(error.message)

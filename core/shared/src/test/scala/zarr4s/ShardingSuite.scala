@@ -38,6 +38,56 @@ class ShardingSuite extends munit.FunSuite:
     val corrected = Crc32c.append(payload)
     assert(ShardIndexCodec.decode(corrected, shape).isLeft)
 
+  test("fixed-size index pipelines preserve exact raw length and round-trip"):
+    val shape = zvalue(Shape(2L, 2L))
+    val program = zvalue(
+      ShardIndexProgram.compile(
+        Vector(
+          BytesCodec(Some(Endianness.Little)),
+          ShuffleCodec(8),
+          Crc32cCodec
+        )
+      )
+    )
+    assertEquals(program.encodedLength(shape, ShardIndexLimits()).map(_.toLong), Right(68L))
+    val index = zvalue(
+      ShardIndex(
+        shape,
+        Vector(
+          ShardIndexEntry.Present(68L, count(8L)),
+          ShardIndexEntry.Fill,
+          ShardIndexEntry.Fill,
+          ShardIndexEntry.Present(76L, count(8L))
+        )
+      )
+    )
+    val raw = zvalue(ShardIndexCodec.encodeRaw(index))
+    val encoded = zvalue(
+      SyncCodecRuntime.core.encodeBytes(
+        raw,
+        program.byteCodecs,
+        count(128L)
+      )
+    )
+    assertEquals(encoded.length, 68)
+    val decodedRaw = zvalue(
+      SyncCodecRuntime.core.decodeBytes(
+        encoded,
+        program.byteCodecs,
+        Some(count(64L)),
+        DecodeLimits.default
+      )
+    )
+    assertEquals(zvalue(ShardIndexCodec.decodeRaw(decodedRaw, shape)).entries, index.entries)
+
+  test("variable-size index codecs are rejected rather than guessed"):
+    val metadata =
+      """{"zarr_format":3,"node_type":"array","shape":[4,4],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[4,4]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"sharding_indexed","configuration":{"chunk_shape":[2,2],"codecs":[{"name":"bytes","configuration":{"endian":"little"}}],"index_codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"gzip","configuration":{"level":1}}]}}],"attributes":{},"storage_transformers":[]}"""
+    val parsed = zvalue(ZarrMetadata.parse(metadata)) match
+      case ZarrNodeMetadata.Array(array) => ArrayDescriptor.compile(array)
+      case _                             => Left(ZarrError.InvalidMetadata("$", "expected array"))
+    assert(parsed.isLeft)
+
   test("Zarr-Python start-indexed shard is byte-compatible in both directions"):
     val innerGridShape = zvalue(Shape(2L, 2L))
     val encodedIndex = ZarrBinaryFixtures.shardedStartObject.slice(0, 68)

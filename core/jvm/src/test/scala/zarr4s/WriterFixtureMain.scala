@@ -12,6 +12,7 @@ object WriterFixtureMain:
     writeSharded(parent.resolve("sharded.zarr"))
     writeUInt64(parent.resolve("uint64.zarr"))
     writeTransposeV2(parent.resolve("transpose-v2.zarr"))
+    writeV2Gzip(parent.resolve("v2-gzip.zarr"))
     writeScalars(parent)
 
   private def writeRankFive(target: Path): Unit =
@@ -55,6 +56,19 @@ object WriterFixtureMain:
     )
     val block = PrimitiveBlock.Int32(OwnedInts.copyOf(Array.range(0, 6)))
     write(target, descriptor, constantProvider(block))
+
+  private def writeV2Gzip(target: Path): Unit =
+    val descriptor = compile(
+      """{"zarr_format":3,"node_type":"array","shape":[2,3],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,3]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"gzip","configuration":{"level":1}}],"dimension_names":["y","x"],"attributes":{"title":"v2 fixture"},"storage_transformers":[]}"""
+    )
+    write(
+      target,
+      descriptor,
+      constantProvider(
+        PrimitiveBlock.Int16(OwnedShorts.copyOf(Array[Short](1, -2, 300, 4, 5, -6)))
+      ),
+      ZarrFormat.V2
+    )
 
   private def writeScalars(parent: Path): Unit =
     val values = Vector[(String, String, PrimitiveBlock)](
@@ -217,7 +231,12 @@ object WriterFixtureMain:
   private def int16(values: Short*): PrimitiveBlock =
     PrimitiveBlock.Int16(OwnedShorts.copyOf(values.toArray))
 
-  private def write(target: Path, descriptor: ArrayDescriptor, provider: ChunkProvider): Unit =
-    JvmZarrWriter.create(target, descriptor, provider) match
+  private def write(
+      target: Path,
+      descriptor: ArrayDescriptor,
+      provider: ChunkProvider,
+      format: ZarrFormat = ZarrFormat.V3
+  ): Unit =
+    JvmZarrWriter.create(target, descriptor, provider, format = format) match
       case Right(_)    => ()
       case Left(error) => throw new IllegalStateException(error.message)

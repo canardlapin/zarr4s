@@ -27,6 +27,29 @@ object BrowserGzip extends AsyncByteCodecExecutor:
         )
       )
 
+  override def decodeBounded(
+      codec: CompiledCodec,
+      encoded: OwnedBytes,
+      limits: DecodeLimits
+  )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] = codec match
+    case _: GzipCodec =>
+      BrowserCompressionStreams
+        .transform("gzip", "gzip", "DecompressionStream", encoded)
+        .map:
+          case Left(error) => Left(error)
+          case Right(decoded) if decoded.byteCount.toLong > limits.maxDecodedBytes.toLong =>
+            Left(
+              CodecError.DecodedLimitExceeded(
+                limits.maxDecodedBytes.toLong,
+                decoded.byteCount.toLong
+              )
+            )
+          case Right(decoded) => Right(decoded)
+    case found =>
+      Future.successful(
+        Left(CodecError.CorruptData(name, s"executor received compiled codec ${found.name}"))
+      )
+
   def encode(
       codec: CompiledCodec,
       decoded: OwnedBytes

@@ -26,6 +26,13 @@ object BlockingByteCodecExecutorAdapter:
           blockingExecutionContext
         )
 
+      override def decodeBounded(
+          codec: CompiledCodec,
+          encoded: OwnedBytes,
+          limits: DecodeLimits
+      )(using ExecutionContext): Future[Either[CodecError, OwnedBytes]] =
+        Future(executor.decodeBounded(codec, encoded, limits))(using blockingExecutionContext)
+
       def encode(
           codec: CompiledCodec,
           decoded: OwnedBytes

@@ -94,6 +94,12 @@ def verify_scala(root: Path) -> None:
     sharded = zarr.open_array(root / "scala-blosc-sharded.zarr", mode="r")
     np.testing.assert_array_equal(np.asarray(sharded[:]), SHARDED)
 
+    v2 = zarr.open_array(root / "scala-blosc-v2.zarr", mode="r")
+    np.testing.assert_array_equal(np.asarray(v2[:]), DIRECT)
+    assert (root / "scala-blosc-v2.zarr" / ".zarray").is_file()
+    assert (root / "scala-blosc-v2.zarr" / ".zattrs").is_file()
+    assert (root / "scala-blosc-v2.zarr" / "0" / "0").is_file()
+
 
 def print_fixtures(root: Path) -> None:
     for name in (

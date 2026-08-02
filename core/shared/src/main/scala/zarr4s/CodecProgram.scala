@@ -115,7 +115,50 @@ object CodecProgram:
   * honest extension point without pretending the current uint64 index implementation supports
   * arbitrary codecs.
   */
-final class ShardIndexProgram private (val codecs: CodecProgram):
+final class ShardIndexProgram private (
+    val codecs: CodecProgram,
+    private[zarr4s] val byteCodecs: CodecProgram
+):
+  private[zarr4s] def encodedLength(
+      innerGridShape: Shape,
+      limits: ShardIndexLimits
+  ): Either[ZarrError, ByteCount] =
+    ShardIndexCodec
+      .rawEncodedLength(innerGridShape, limits)
+      .flatMap: raw =>
+        var length = raw.toLong
+        var index = 0
+        val stages = codecs.stages
+        while index < stages.length do
+          stages(index) match
+            case _: BytesCodec             => ()
+            case ShuffleCodec(elementSize) =>
+              if elementSize < 1 || length % elementSize.toLong != 0L then
+                return Left(
+                  ZarrError.InvalidMetadata(
+                    "$.codecs[0].configuration.index_codecs",
+                    s"shuffle elementsize $elementSize does not divide index length $length"
+                  )
+                )
+            case Crc32cCodec =>
+              LongArrays.checkedAdd(length, 4L, "shard index byte length") match
+                case Left(error)  => return Left(error)
+                case Right(found) => length = found
+            case stage =>
+              return Left(
+                ZarrError.UnsupportedExtension("shard index codec pipeline", stage.name)
+              )
+          index += 1
+        if length > limits.maxIndexBytes.toLong then
+          Left(ZarrError.ResourceLimit("shard index bytes", limits.maxIndexBytes.toLong, length))
+        else ByteCount(length)
+
+  private[zarr4s] def rawLength(
+      innerGridShape: Shape,
+      limits: ShardIndexLimits
+  ): Either[ZarrError, ByteCount] =
+    ShardIndexCodec.rawEncodedLength(innerGridShape, limits)
+
   override def equals(other: Any): Boolean = other match
     case that: ShardIndexProgram => codecs == that.codecs
     case _                       => false
@@ -126,9 +169,12 @@ final class ShardIndexProgram private (val codecs: CodecProgram):
 
 object ShardIndexProgram:
   private[zarr4s] def compile(stages: Vector[CompiledCodec]): Either[ZarrError, ShardIndexProgram] =
-    stages match
-      case Vector(BytesCodec(Some(Endianness.Little)), Crc32cCodec) =>
-        CodecProgram.compile(CodecRepresentation.ArrayValues, stages).map(new ShardIndexProgram(_))
+    stages.headOption match
+      case Some(BytesCodec(Some(Endianness.Little))) if stages.tail.forall(isFixedSize) =>
+        for
+          codecs <- CodecProgram.compile(CodecRepresentation.ArrayValues, stages)
+          byteCodecs <- CodecProgram.compile(CodecRepresentation.Bytes, stages.tail)
+        yield new ShardIndexProgram(codecs, byteCodecs)
       case _ =>
         Left(
           ZarrError.UnsupportedExtension(
@@ -136,3 +182,8 @@ object ShardIndexProgram:
             stages.map(_.name).mkString("[", ",", "]")
           )
         )
+
+  private def isFixedSize(codec: CompiledCodec): Boolean = codec match
+    case ShuffleCodec(elementSize) => elementSize > 0
+    case Crc32cCodec               => true
+    case _                         => false

@@ -19,7 +19,8 @@ object JvmZarrWriter:
       descriptor: ArrayDescriptor,
       provider: ChunkProvider,
       limits: WriterLimits = WriterLimits(),
-      runtime: SyncCodecRuntime = JvmCodecRuntime.portable
+      runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
+      format: ZarrFormat = ZarrFormat.V3
   ): Either[ZarrError, WriteReceipt] =
     val absolute = target.toAbsolutePath.normalize()
     val parent = absolute.getParent
@@ -38,7 +39,8 @@ object JvmZarrWriter:
                 descriptor,
                 provider,
                 limits = limits,
-                runtime = runtime
+                runtime = runtime,
+                format = format
               )
               .toEither
             _ <- publish(stage, absolute)

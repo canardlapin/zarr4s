@@ -48,6 +48,16 @@ def verify_scala(root: Path) -> None:
     )
     assert (root / "transpose-v2.zarr" / "0.0").is_file()
 
+    v2_gzip = zarr.open_array(root / "v2-gzip.zarr", mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(v2_gzip[:]),
+        np.array([[1, -2, 300], [4, 5, -6]], dtype=np.int16),
+    )
+    assert v2_gzip.attrs["_ARRAY_DIMENSIONS"] == ["y", "x"]
+    assert (root / "v2-gzip.zarr" / ".zarray").is_file()
+    assert (root / "v2-gzip.zarr" / ".zattrs").is_file()
+    assert (root / "v2-gzip.zarr" / "0" / "0").is_file()
+
     scalar_values = {
         "bool": [False, True, False, True, True, False],
         "int8": [-128, -1, 0, 1, 42, 127],

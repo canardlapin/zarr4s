@@ -14,34 +14,40 @@ object AsyncZarrWriter:
       provider: AsyncChunkProvider,
       path: ZarrPath = ZarrPath.root,
       limits: WriterLimits = WriterLimits(),
-      runtime: AsyncCodecRuntime = AsyncCodecRuntime.core
+      runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
+      format: ZarrFormat = ZarrFormat.V3
   )(using ExecutionContext): Future[WriteOutcome] =
     val metrics = new WriteMetrics
+    val writeDescriptor = WriteInternals.descriptorForWrite(descriptor, format)
     val prepared =
       try
         for
           _ <- OpenValidation.codecPrograms(descriptor, runtime.validate)
-          metadata <- WriteInternals.arrayMetadata(descriptor, path, limits)
+          metadata <- WriteInternals.arrayMetadata(descriptor, path, limits, format)
         yield metadata
       catch case NonFatal(error) => Left(ZarrError.WriteFailure(error.getMessage))
     prepared match
       case Left(error)     => Future.successful(WriteOutcome.Incomplete(metrics.snapshot, error))
       case Right(metadata) =>
-        val writing = writeArray(
-          store,
-          descriptor,
-          provider,
-          path,
-          metadata._2.byteCount,
-          limits,
-          runtime,
-          metrics
-        ).flatMap:
+        val writing = publishPrelude(store, metadata, limits, metrics).flatMap:
           case Left(error) => Future.successful(WriteOutcome.Incomplete(metrics.snapshot, error))
           case Right(_)    =>
-            finish(store, metadata, metrics).map:
-              case Left(error)    => WriteOutcome.Incomplete(metrics.snapshot, error)
-              case Right(receipt) => WriteOutcome.Complete(receipt)
+            writeArray(
+              store,
+              writeDescriptor,
+              provider,
+              path,
+              metadata.primaryBytes.byteCount,
+              limits,
+              runtime,
+              metrics
+            ).flatMap:
+              case Left(error) =>
+                Future.successful(WriteOutcome.Incomplete(metrics.snapshot, error))
+              case Right(_) =>
+                finish(store, metadata, metrics).map:
+                  case Left(error)    => WriteOutcome.Incomplete(metrics.snapshot, error)
+                  case Right(receipt) => WriteOutcome.Complete(receipt)
         writing.recover:
           case NonFatal(error) =>
             WriteOutcome.Incomplete(
@@ -53,18 +59,22 @@ object AsyncZarrWriter:
       store: AsyncObjectWriter,
       metadata: GroupMetadata,
       path: ZarrPath = ZarrPath.root,
-      limits: WriterLimits = WriterLimits()
+      limits: WriterLimits = WriterLimits(),
+      format: ZarrFormat = ZarrFormat.V3
   )(using ExecutionContext): Future[WriteOutcome] =
     val metrics = new WriteMetrics
     val rendered =
-      try WriteInternals.groupMetadata(metadata, path, limits)
+      try WriteInternals.groupMetadata(metadata, path, limits, format)
       catch case NonFatal(error) => Left(ZarrError.WriteFailure(error.getMessage))
     rendered match
       case Left(error)  => Future.successful(WriteOutcome.Incomplete(metrics.snapshot, error))
       case Right(found) =>
-        val writing = finish(store, found, metrics).map:
-          case Left(error)    => WriteOutcome.Incomplete(metrics.snapshot, error)
-          case Right(receipt) => WriteOutcome.Complete(receipt)
+        val writing = publishPrelude(store, found, limits, metrics).flatMap:
+          case Left(error) => Future.successful(WriteOutcome.Incomplete(metrics.snapshot, error))
+          case Right(_)    =>
+            finish(store, found, metrics).map:
+              case Left(error)    => WriteOutcome.Incomplete(metrics.snapshot, error)
+              case Right(receipt) => WriteOutcome.Complete(receipt)
         writing.recover:
           case NonFatal(error) =>
             WriteOutcome.Incomplete(
@@ -94,29 +104,22 @@ object AsyncZarrWriter:
         runtime,
         metrics
       )
-    case PhysicalLayout.Sharded(sharded, innerCodecs, _, location, outerCodecs) =>
-      if outerCodecs.nonEmpty then
-        Future.successful(
-          Left(
-            ZarrError.UnsupportedWrite(
-              "outer codecs after sharding_indexed are not supported"
-            )
-          )
-        )
-      else
-        writeSharded(
-          store,
-          descriptor,
-          sharded,
-          innerCodecs,
-          location,
-          provider,
-          path,
-          metadataLength,
-          limits,
-          runtime,
-          metrics
-        )
+    case PhysicalLayout.Sharded(sharded, innerCodecs, indexCodecs, location, outerCodecs) =>
+      writeSharded(
+        store,
+        descriptor,
+        sharded,
+        innerCodecs,
+        indexCodecs,
+        location,
+        outerCodecs,
+        provider,
+        path,
+        metadataLength,
+        limits,
+        runtime,
+        metrics
+      )
 
   private def writeDirect(
       store: AsyncObjectWriter,
@@ -164,7 +167,9 @@ object AsyncZarrWriter:
       descriptor: ArrayDescriptor,
       sharded: ShardedGrid,
       innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
+      outerCodecs: CodecProgram,
       provider: AsyncChunkProvider,
       path: ZarrPath,
       metadataLength: ByteCount,
@@ -178,7 +183,9 @@ object AsyncZarrWriter:
         sharded,
         shardCoordinate,
         innerCodecs,
+        indexCodecs,
         location,
+        outerCodecs,
         provider,
         limits,
         runtime,
@@ -207,7 +214,9 @@ object AsyncZarrWriter:
       sharded: ShardedGrid,
       shardCoordinate: ChunkCoordinate,
       innerCodecs: CodecProgram,
+      indexCodecs: ShardIndexProgram,
       location: IndexLocation,
+      outerCodecs: CodecProgram,
       provider: AsyncChunkProvider,
       limits: WriterLimits,
       runtime: AsyncCodecRuntime,
@@ -255,16 +264,41 @@ object AsyncZarrWriter:
                       result.map: encoded =>
                         chunks += Some(encoded)
                         ()
-    visited.map(result =>
-      result.flatMap(_ =>
-        WriteInternals.assembleShard(
-          chunks.result(),
-          sharded.innerChunksPerShard,
-          location,
-          limits
+    visited
+      .map(result =>
+        result.flatMap(_ =>
+          WriteInternals.prepareShard(
+            chunks.result(),
+            sharded.innerChunksPerShard,
+            indexCodecs,
+            location,
+            limits
+          )
         )
       )
-    )
+      .flatMap:
+        case Left(error)           => Future.successful(Left(error))
+        case Right(None)           => Future.successful(Right(None))
+        case Right(Some(prepared)) =>
+          runtime
+            .encodeBytes(
+              prepared.rawIndex,
+              indexCodecs.byteCodecs,
+              limits.shardIndex.maxIndexBytes
+            )
+            .flatMap:
+              case Left(error)         => Future.successful(Left(error))
+              case Right(encodedIndex) =>
+                WriteInternals.assemblePreparedShard(prepared, encodedIndex) match
+                  case Left(error)      => Future.successful(Left(error))
+                  case Right(unwrapped) =>
+                    runtime
+                      .encodeBytes(
+                        unwrapped,
+                        outerCodecs,
+                        WriteInternals.shardLimit(limits)
+                      )
+                      .map(_.map(Some.apply))
 
   private def encodeChunk(
       block: PrimitiveBlock,
@@ -311,12 +345,27 @@ object AsyncZarrWriter:
           case Left(error) => Left(ZarrError.StoreFailure(error))
           case Right(_)    => metrics.record(WriteInternals.written(key, bytes))
 
+  private def publishPrelude(
+      store: AsyncObjectWriter,
+      metadata: WriteInternals.MetadataObjects,
+      limits: WriterLimits,
+      metrics: WriteMetrics
+  )(using ExecutionContext): Future[Either[ZarrError, Unit]] = metadata.prelude match
+    case None               => Future.successful(Right(()))
+    case Some((key, bytes)) =>
+      metrics.permitMetadataObject(bytes.byteCount, metadata.primaryBytes.byteCount, limits) match
+        case Left(error) => Future.successful(Left(error))
+        case Right(_)    =>
+          safe(store.create(key, bytes)).map:
+            case Left(error) => Left(ZarrError.StoreFailure(error))
+            case Right(_)    => metrics.recordMetadata(WriteInternals.written(key, bytes))
+
   private def finish(
       store: AsyncObjectWriter,
-      metadata: (StoreKey, OwnedBytes),
+      metadata: WriteInternals.MetadataObjects,
       metrics: WriteMetrics
   )(using ExecutionContext): Future[Either[ZarrError, WriteReceipt]] =
-    val (key, bytes) = metadata
+    val (key, bytes) = metadata.primary
     safe(store.create(key, bytes)).map:
       case Left(error) => Left(ZarrError.StoreFailure(error))
       case Right(_)    =>

@@ -39,25 +39,24 @@ constitute evidence that this implementation supports a feature.
 | V3 hierarchy | Groups, arrays, explicit navigation, bounded inline consolidation, and bounded un-consolidated discovery through optional listing capabilities | JVM and Scala.js hierarchy/listing suites and independent metadata fixtures; HTTP/Fetch listing remains caller-provided |
 | V3 grid and keys | Regular grids, default keys, v2-compatible keys, scalar and arbitrary runtime rank | Shared geometry, grid, key, reader, and writer suites |
 | V3 data types | `bool`, signed and unsigned integers 8/16/32/64, `float16`, `float32`, `float64`, `complex64`, `complex128`, and byte-multiple raw `rN` | Exact fill, endian, byte, selection, transpose, and independent Zarr-Python payload tests |
-| V3 common codecs | Bytes, transpose, gzip, CRC32C, and indexed sharding at start or end | Direct and sharded JVM/Scala.js fixtures, including writer output |
+| V3 common codecs | Bytes, transpose, gzip, zlib, CRC32C, and indexed sharding at start or end; fixed-size index stages and bounded outer-codec fallback | Direct and sharded JVM/Scala.js fixtures, including writer output, corruption, and limit tests |
 | Optional codecs | Blosc and standalone Zstandard in `zarr4s-codec-blosc-zstd` | Provider metadata, bounded/corruption, direct, sharded, JVM, and Scala.js suites |
 | V2 reading | Groups and arrays lowered into the shared descriptor; C/F order; endian; dot/slash keys; consolidated and listing-backed un-consolidated metadata | V2 metadata, hierarchy/listing, reader, and external compatibility fixtures |
 | V2 codecs | gzip, zlib, common shuffle, dtype-aware delta for fixed-width boolean/integer/floating arrays, and optional Blosc/Zstandard provider paths | V2 metadata, JVM/Scala.js runtime, and independent Zarr-Python end-to-end fixtures; unsupported codecs fail typed |
-| Writing | Create-only V3 arrays and groups over sync/async object capabilities | Shared writer and JVM filesystem publication suites |
+| Writing | Create-only V3 and common V2 arrays and groups over sync/async object capabilities; V2 publishes `.zattrs` before the final `.zarray`/`.zgroup` marker and uses v2 chunk keys | Shared writer suites, JVM filesystem publication, Zarr-Python 3.2.1 readback, and zarrs 0.23.13 readback |
 | Stores | Whole-object, range, and length reads; optional bounded listing; immutable object creation; bounded memory, filesystem, HTTP, and Fetch adapters | Store, listing, and transport suites; HTTP/Fetch listing remains an explicit caller capability |
 
 ### Planned common slices
 
 | Slice | Intended claim | Required proof |
 | --- | --- | --- |
-| Sharding parity | Outer codec support and lawful fixed-size index codec profiles | Bounded whole-shard fallback, range fast path, writer output, and corruption fixtures |
-| V2 creation | Create-only `.zarray`, `.zattrs`, and `.zgroup` output from the shared descriptor | Zarr-Python and zarrs readback, deterministic keys, fill omission, interruption receipts |
+| Additional optional extensions | Admit another codec or extension only when it has symmetric JVM/Scala.js implementations and a separate artifact boundary | Codec-specific metadata, encode/decode, corruption/limit, artifact-size, licensing, and independent Python differential gates |
 
 ## Explicit non-claims
 
 The following remain unsupported until a concrete, lawful contract is added:
 
-- V2 creation, overwrite, resize, append, deletion, and concurrent mutation.
+- V2 overwrite, resize, append, deletion, and concurrent mutation.
 - V2 object, variable-length, structured, string, datetime, and timedelta data.
 - V2 filters other than shuffle and dtype-aware delta for fixed-width
   boolean/integer/floating arrays until their typed array semantics are
@@ -132,10 +131,25 @@ The slice must also update the support boundary and preserve the independent
 standalone consumer. A green unit suite without cross-platform compilation,
 external fixture evidence, or a clean dependency boundary is incomplete.
 
+The create-only V2 writer court is reproducible with the pinned external
+readers:
+
+```text
+sbt 'coreJVM/Test/runMain zarr4s.WriterFixtureMain /tmp/zarr4s-writer'
+uvx --with zarr==3.2.1 --with numpy python \
+  tools/verify_zarr_python_interop.py verify-scala /tmp/zarr4s-writer
+python tools/verify_zarrs_v2_interop.py /tmp/zarr4s-writer
+```
+
+The Zarr-Python script covers the existing bidirectional corpus plus the V2
+`.zarray`/`.zattrs` fixture; the zarrs oracle is pinned to 0.23.13 and reads
+the same gzip-compressed V2 array.
+
 ## Order of work
 
 1. Keep this matrix and the independent-fixture rules current.
-2. Complete sharding outer/index parity, then add create-only v2 writing.
+2. Keep the completed sharding and V2 creation slices covered by the full
+   cross-platform and external gates.
 3. Admit additional optional codecs or extensions only after their own provider
    and deployment courts pass.
 

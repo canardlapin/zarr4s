@@ -3,6 +3,8 @@ package zarr4s
 import java.nio.file.Files
 import java.nio.file.Path
 import scala.jdk.CollectionConverters.*
+import scala.concurrent.ExecutionContext
+import scala.concurrent.ExecutionContext.Implicits.global
 
 class JvmWriterSuite extends munit.FunSuite:
   private def zvalue[A](result: Either[ZarrError, A]): A = result match
@@ -21,6 +23,9 @@ class JvmWriterSuite extends munit.FunSuite:
 
   private val directMetadata =
     """{"zarr_format":3,"node_type":"array","shape":[4,5],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,3]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":-9,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"gzip","configuration":{"level":1}},{"name":"crc32c"}],"dimension_names":["y","x"],"attributes":{},"storage_transformers":[]}"""
+
+  private val outerShardedMetadata =
+    """{"zarr_format":3,"node_type":"array","shape":[4,4],"data_type":"int16","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[4,4]}},"chunk_key_encoding":{"name":"default","configuration":{"separator":"/"}},"fill_value":0,"codecs":[{"name":"sharding_indexed","configuration":{"chunk_shape":[2,2],"codecs":[{"name":"bytes","configuration":{"endian":"little"}}],"index_codecs":[{"name":"bytes","configuration":{"endian":"little"}},{"name":"shuffle","configuration":{"elementsize":8}},{"name":"crc32c"}],"index_location":"start"}},{"name":"gzip","configuration":{"level":1}}],"attributes":{},"storage_transformers":[]}"""
 
   test("direct writer is create-only, deterministic, and readable"):
     val parent = Files.createTempDirectory("zarr4s-core-writer-direct")
@@ -75,6 +80,123 @@ class JvmWriterSuite extends munit.FunSuite:
       ZarrBinaryFixtures.shardedStartObject
     )
     assertEquals(sharded.innerChunksPerShard.toVector, Vector(2L, 2L))
+
+  test("outer gzip sharding uses a bounded whole-shard read and fixed-size index stages"):
+    val found = descriptor(outerShardedMetadata)
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] = coordinate.toVector match
+        case Vector(0L, 0L) => Right(ChunkPayload.Values(int16(1, 2, 3, 4)))
+        case Vector(1L, 1L) => Right(ChunkPayload.Values(int16(13, 14, 15, 16)))
+        case _              => Right(ChunkPayload.Fill)
+    val store = zvalue(MemoryStore(Map.empty))
+    val receipt = zvalue(
+      SyncZarrWriter.create(
+        store,
+        found,
+        provider,
+        runtime = JvmCodecRuntime.portable
+      ) match
+        case WriteOutcome.Complete(value)      => Right(value)
+        case WriteOutcome.Incomplete(_, error) => Left(error)
+    )
+    val opened = zvalue(SyncZarr.openArray(store, runtime = JvmCodecRuntime.portable))
+    val region = zvalue(Region.within(found.shape, zvalue(Coordinate(0L, 0L)), found.shape))
+    val result = zvalue(opened.readRegion(region))
+    assertEquals(
+      shorts(result),
+      Vector[Short](1, 2, 0, 0, 3, 4, 0, 0, 0, 0, 13, 14, 0, 0, 15, 16)
+    )
+    assertEquals(result.receipt.objectRequests, 1)
+    assertEquals(result.receipt.rangeRequests, 0)
+    assertEquals(result.receipt.lengthRequests, 0)
+    assertEquals(result.receipt.indexBytesRead, 0L)
+    assertEquals(result.receipt.dataBytesRead, result.receipt.bytesRead)
+    assertEquals(receipt.objects.map(_.key.value), Vector("c/0/0"))
+
+  test("async outer sharding writes and reads through bounded whole-shard fallback"):
+    val found = descriptor(outerShardedMetadata)
+    val provider = new AsyncChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      )(using ExecutionContext): scala.concurrent.Future[Either[ZarrError, ChunkPayload]] =
+        val payload = coordinate.toVector match
+          case Vector(0L, 0L) => ChunkPayload.Values(int16(1, 2, 3, 4))
+          case Vector(1L, 1L) => ChunkPayload.Values(int16(13, 14, 15, 16))
+          case _              => ChunkPayload.Fill
+        scala.concurrent.Future.successful(Right(payload))
+    val store = zvalue(AsyncMemoryStore(Map.empty))
+    val runtime = JvmAsyncCodecRuntime.portable(global)
+    AsyncZarrWriter
+      .create(store, found, provider, runtime = runtime)
+      .flatMap:
+        case WriteOutcome.Incomplete(_, error) =>
+          scala.concurrent.Future.failed(new AssertionError(error.message))
+        case WriteOutcome.Complete(_) =>
+          val region = zvalue(Region.within(found.shape, zvalue(Coordinate(0L, 0L)), found.shape))
+          AsyncZarr
+            .openArray(store, runtime = runtime)
+            .flatMap:
+              case Left(error) => scala.concurrent.Future.failed(new AssertionError(error.message))
+              case Right(opened) =>
+                opened
+                  .readRegion(region)
+                  .map:
+                    case Left(error)   => fail(error.message)
+                    case Right(result) =>
+                      val values = result.block match
+                        case PrimitiveBlock.Int16(found) => found.toArray.toVector
+                        case _                           => fail("expected int16 result")
+                      assertEquals(
+                        values,
+                        Vector[Short](1, 2, 0, 0, 3, 4, 0, 0, 0, 0, 13, 14, 0, 0, 15, 16)
+                      )
+                      assertEquals(result.receipt.objectRequests, 1)
+                      assertEquals(result.receipt.rangeRequests, 0)
+
+  test("whole-shard fallback fails closed on outer corruption and decoded-size limits"):
+    val found = descriptor(outerShardedMetadata)
+    val provider = new ChunkProvider:
+      def chunk(
+          coordinate: ChunkCoordinate,
+          storedShape: Shape
+      ): Either[ZarrError, ChunkPayload] = coordinate.toVector match
+        case Vector(0L, 0L) => Right(ChunkPayload.Values(int16(1, 2, 3, 4)))
+        case _              => Right(ChunkPayload.Fill)
+    val source = zvalue(MemoryStore(Map.empty))
+    zvalue(
+      SyncZarrWriter.create(
+        source,
+        found,
+        provider,
+        runtime = JvmCodecRuntime.portable
+      ) match
+        case WriteOutcome.Complete(value)      => Right(value)
+        case WriteOutcome.Incomplete(_, error) => Left(error)
+    )
+    val corruptedBytes = source.snapshot("c/0/0").toArray
+    corruptedBytes(0) = (corruptedBytes(0) ^ 1).toByte
+    val corrupted = zvalue(
+      MemoryStore(source.snapshot.updated("c/0/0", OwnedBytes.copyOf(corruptedBytes)))
+    )
+    val region = zvalue(Region.within(found.shape, zvalue(Coordinate(0L, 0L)), found.shape))
+    val openedCorrupted = zvalue(SyncZarr.openArray(corrupted, runtime = JvmCodecRuntime.portable))
+    assert(openedCorrupted.readRegion(region).isLeft)
+
+    val limited = zvalue(SyncZarr.openArray(source, runtime = JvmCodecRuntime.portable))
+    assert(
+      limited
+        .readRegion(
+          region,
+          ReadLimits(
+            shardIndex = ShardIndexLimits(maxShardBytes = ByteCount.unsafe(8L))
+          )
+        )
+        .isLeft
+    )
 
   test("provider failure never publishes a partial target and staging is cleaned"):
     val parent = Files.createTempDirectory("zarr4s-core-writer-interrupt")
