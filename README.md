@@ -169,6 +169,8 @@ testing native JVM and pure-JavaScript implementations on Scala.js.
 
 The executable architecture and extraction gates are recorded in
 [`docs/plans/zarr-z6-codec-architecture.md`](docs/plans/zarr-z6-codec-architecture.md).
+The common-feature support matrix and conformance courts are recorded in
+[`docs/plans/zarr-z9-common-zarr-support.md`](docs/plans/zarr-z9-common-zarr-support.md).
 The repository also contains a deliberately independent JVM/Scala.js consumer
 under [`examples/standalone-consumer`](examples/standalone-consumer).
 Interoperability tests read both Zarr-Python fixtures and an attributed fixture
