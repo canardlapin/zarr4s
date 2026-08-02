@@ -20,6 +20,43 @@ trait ChunkProvider:
       storedShape: Shape
   ): Either[ZarrError, ChunkPayload]
 
+object ChunkProvider:
+  /** Build a dense adapter after checking the descriptor's dynamic dtype and shape. */
+  def fromDense[D <: DType](
+      descriptor: ArrayDescriptor,
+      data: DenseArray[D]
+  ): Either[ZarrError, ChunkProvider] =
+    if descriptor.shape != data.shape then
+      Left(
+        ZarrError.InvalidShape(
+          s"dense value shape ${data.shape} does not match descriptor shape ${descriptor.shape}"
+        )
+      )
+    else if descriptor.dataType.name != data.dtype.dataType.name then
+      Left(
+        ZarrError.DTypeMismatch(
+          descriptor.dataType.name,
+          data.dtype.name,
+          "dense chunk provider"
+        )
+      )
+    else
+      val chunkShape = logicalGrid(descriptor).chunkShape
+      data.block.map: source =>
+        new DenseChunkProvider(descriptor, source, data.shape, chunkShape)
+
+  /** A provider that emits fill for every requested chunk. */
+  def fill(descriptor: ArrayDescriptor): ChunkProvider = new ChunkProvider:
+    def chunk(
+        _coordinate: ChunkCoordinate,
+        _storedShape: Shape
+    ): Either[ZarrError, ChunkPayload] = Right(ChunkPayload.Fill)
+
+  private[zarr4s] def logicalGrid(descriptor: ArrayDescriptor): RegularGrid =
+    descriptor.layout match
+      case PhysicalLayout.Direct(_)                    => descriptor.grid
+      case PhysicalLayout.Sharded(sharded, _, _, _, _) => sharded.globalInnerGrid
+
 trait AsyncChunkProvider:
   def chunk(
       coordinate: ChunkCoordinate,

@@ -1,99 +1,206 @@
 # zarr4s
 
-`zarr4s` is a Scala 3 implementation of Zarr v3 with create-only support for
-common Zarr v2 arrays and groups. The shared API cross-compiles to the JVM and
-Scala.js.
+[![CI](https://github.com/canardlapin/zarr4s/actions/workflows/ci.yml/badge.svg)](https://github.com/canardlapin/zarr4s/actions/workflows/ci.yml) · [Apache-2.0](LICENSE) · [Design notes](docs/README.md) · [Standalone consumer](examples/standalone-consumer/)
 
-The `zarr4s-core` artifact is dependency-free. It supplies metadata validation,
-runtime-rank array descriptors, chunk planning, readers, writers, object-store
-capabilities, codec programs, and bounded caches. Platform code supplies JVM
-filesystem and HTTP transports or browser Fetch; optional codecs live in a
-separate artifact.
+`zarr4s` is a cross-platform Scala 3 library for creating, reading, and
+validating Zarr arrays and groups on the JVM and Scala.js. Use it when you need
+a portable Zarr kernel that keeps dtype, shape, ownership, capabilities, and
+I/O errors explicit. The typed façade covers the ordinary dense-array path;
+descriptor and provider APIs remain available for streaming data and custom
+storage.
 
-> Current status: early development on the 0.1 line. Artifacts are not
-> published yet.
+The default artifact is `zarr4s-core`. Its shared core is dependency-free at
+runtime and cross-compiles to both platforms; JVM filesystem/HTTP transports,
+browser Fetch, and optional codecs live at explicit platform or provider
+boundaries.
+
+> **Status:** 0.1 pre-release. No stable release artifact is published yet;
+> use a checkout or the local publication path in the standalone-consumer
+> example.
 
 ## Quick start
 
-The following example writes a 2 × 3 `int16` Zarr v3 array to an in-memory
-store, then reads it back. It uses only `zarr4s-core`, so the shared code works
-on both platforms.
+The typed façade makes the common path explicit without making callers write
+metadata JSON or construct chunk providers. `ArraySpec[D]` checks the dtype,
+shape, chunk shape, and optional format choices; `DenseArray.copyOf` copies a
+regular Scala array once and owns the resulting storage. Every validation and
+I/O boundary remains an `Either[ZarrError, *]`, so applications can choose
+their own error policy.
 
-<details>
-<summary>Complete in-memory example</summary>
+The following is the complete shared example. It writes a 2 × 3 `int16` Zarr
+v3 array to an in-memory store and reads it back through a typed handle. The
+same source compiles on the JVM and Scala.js.
 
 ```scala
 import zarr4s.*
 
 @main def quickstart(): Unit =
-  def value[A](result: Either[ZarrError, A]): A = result match
-    case Right(found) => found
-    case Left(error)  => throw IllegalArgumentException(error.message)
+  val result =
+    for
+      shape <- Shape(2L, 3L)
+      chunks <- Shape(2L, 3L)
+      spec <- ArraySpec(DType.Int16, shape, chunks)
+      values <- DenseArray.copyOf(
+        DType.Int16,
+        shape,
+        Array[Short](1, 2, 3, 4, 5, 6)
+      )
+      store <- MemoryStore.empty
+      created <- SyncZarr.createAndOpenArray(store, spec, values)
+      opened <- created.opened
+      read <- opened.readAll()
+    yield read
 
-  val metadata =
-    """{
-      |  "zarr_format": 3,
-      |  "node_type": "array",
-      |  "shape": [2, 3],
-      |  "data_type": "int16",
-      |  "chunk_grid": {
-      |    "name": "regular",
-      |    "configuration": {"chunk_shape": [2, 3]}
-      |  },
-      |  "chunk_key_encoding": {
-      |    "name": "default",
-      |    "configuration": {"separator": "/"}
-      |  },
-      |  "fill_value": 0,
-      |  "codecs": [
-      |    {"name": "bytes", "configuration": {"endian": "little"}}
-      |  ],
-      |  "dimension_names": ["y", "x"],
-      |  "attributes": {},
-      |  "storage_transformers": []
-      |}""".stripMargin
-
-  val descriptor = value(
-    ZarrMetadata.parse(metadata).flatMap:
-      case ZarrNodeMetadata.Array(array) => ArrayDescriptor.compile(array)
-      case ZarrNodeMetadata.Group(_)     => Left(ZarrError.UnsupportedNodeType("group"))
-  )
-
-  val values = PrimitiveBlock.Int16(
-    OwnedShorts.copyOf(Array[Short](1, 2, 3, 4, 5, 6))
-  )
-  val provider = new ChunkProvider:
-    def chunk(
-        _coordinate: ChunkCoordinate,
-        _storedShape: Shape
-    ): Either[ZarrError, ChunkPayload] = Right(ChunkPayload.Values(values))
-
-  val store = value(MemoryStore(Map.empty))
-  SyncZarrWriter.create(store, descriptor, provider).toEither match
+  result match
+    case Right(read) =>
+      println(s"values = ${read.data.toArray.toVector}")
+      println(s"bytes read = ${read.receipt.bytesRead}")
     case Left(error) => throw IllegalArgumentException(error.message)
-    case Right(_)    => ()
-
-  val opened = value(SyncZarr.openArray(store))
-  val origin = value(Coordinate(0L, 0L))
-  val region = value(Region.within(descriptor.shape, origin, descriptor.shape))
-  val result = value(opened.readRegion(region))
-
-  result.block match
-    case PrimitiveBlock.Int16(block) =>
-      println(s"values = ${block.toArray.toVector}")
-      println(s"bytes read = ${result.receipt.bytesRead}")
-    case _ => throw IllegalStateException("expected int16 data")
 ```
+
+The final match is the application’s error policy; there is no library-wide
+throwing or retry policy hidden in the façade. `read.data` is an owned
+`DenseArray[DType.Int16.type]`, and `read.receipt` is the actual
+`ExecutionReceipt` for this read.
+
+Expected output:
+
+```text
+values = Vector(1, 2, 3, 4, 5, 6)
+bytes read = 12
+```
+
+## What it covers
+
+- Create and read typed dense arrays without writing metadata JSON or a custom
+  chunk provider.
+- Open common Zarr v2 and v3 arrays and groups through one validated descriptor
+  model.
+- Read complete arrays, regions, points, and factored selections, including
+  border chunks, fill values, and indexed sharding.
+- Run the shared kernel on the JVM and Scala.js while supplying storage,
+  scheduling, retry, cache, and codec capabilities explicitly.
+- Keep optional Blosc/Zstandard support out of the core artifact until an
+  application opts into the separate provider.
+
+## Choose an entry point
+
+For a writer-only capability, use `SyncZarr.createArray` (or
+`createArrayFromProvider`) and inspect the returned `TypedWriteResult`. Its
+`WriteOutcome.Complete` contains a `WriteReceipt`; `WriteOutcome.Incomplete`
+retains progress and the typed error. The writer is create-only: it will not
+overwrite an existing target, append, resize, or publish an incomplete target.
+
+`DenseArray.copyOf` is the safe boundary for an ordinary Scala array. Use
+`DenseArray.adopt` only when the caller transfers ownership and will never
+mutate the supplied array afterward. Shapes are runtime-rank values, so
+invalid rank, chunk, and element-count combinations fail during construction.
+The `DType` witness then refines an opened dynamic descriptor and prevents a
+read from silently changing representation.
+
+The defaults are deliberately small: regular chunks, little-endian bytes for
+direct v3 arrays, no compression, and caller-supplied object-store and
+scheduling capabilities. Opt into a supported codec or indexed sharding
+explicitly:
+
+```scala
+val sharding = ShardingSpec.indexed(Shape(1L, 3L).toOption.get)
+val created = SyncZarr.createAndOpenArray(
+  store,
+  spec,
+  values,
+  sharding = Some(sharding),
+  codecs = Vector(ArrayCodecSpec.Crc32c)
+)
+```
+
+Codec availability is a capability, not an implicit global. Supply the
+platform runtime (for example `JvmCodecRuntime.portable` or
+`BrowserCodecRuntime.portable`) and any optional provider required by the
+chosen codec; unsupported combinations return `ZarrError`.
+
+For a typed sub-region, construct the region explicitly and keep the same
+typed result and receipt:
+
+```scala
+val subregion = for
+  origin <- Coordinate(0L, 0L)
+  extent <- Shape(1L, 3L)
+  region <- Region.within(spec.shape, origin, extent)
+yield region
+
+val selected = subregion.flatMap(opened.readRegion(_))
+```
+
+The low-level descriptor/provider layer remains the right tool for streaming
+data, custom chunk construction, external metadata, or fragment-level reads.
+It is an advanced route, not a deprecated one:
+
+<details>
+<summary>Advanced: metadata and custom chunk providers</summary>
+
+```scala
+val metadata =
+  """{
+    |  "zarr_format": 3,
+    |  "node_type": "array",
+    |  "shape": [2, 3],
+    |  "data_type": "int16",
+    |  "chunk_grid": {
+    |    "name": "regular",
+    |    "configuration": {"chunk_shape": [2, 3]}
+    |  },
+    |  "chunk_key_encoding": {
+    |    "name": "default",
+    |    "configuration": {"separator": "/"}
+    |  },
+    |  "fill_value": 0,
+    |  "codecs": [
+    |    {"name": "bytes", "configuration": {"endian": "little"}}
+    |  ],
+    |  "dimension_names": ["y", "x"],
+    |  "attributes": {},
+    |  "storage_transformers": []
+  }""".stripMargin
+
+val descriptor = ZarrMetadata.parse(metadata).flatMap:
+  case ZarrNodeMetadata.Array(array) => ArrayDescriptor.compile(array)
+  case ZarrNodeMetadata.Group(_)     => Left(ZarrError.UnsupportedNodeType("group"))
+
+val block = PrimitiveBlock.Int16(
+  OwnedShorts.copyOf(Array[Short](1, 2, 3, 4, 5, 6))
+)
+
+val provider = new ChunkProvider:
+  def chunk(
+      coordinate: ChunkCoordinate,
+      storedShape: Shape
+  ): Either[ZarrError, ChunkPayload] =
+    // Stream or synthesize the requested chunk here.
+    Right(ChunkPayload.Values(block))
+
+val written = for
+  foundDescriptor <- descriptor
+  foundStore <- MemoryStore.empty
+  outcome <- SyncZarrWriter.create(foundStore, foundDescriptor, provider).toEither
+yield outcome
+```
+
+The advanced path is where a caller supplies canonical metadata, a custom
+provider, or fragment-level policy. It still uses the same create-only writer,
+typed errors, capability checks, and receipts as the façade.
 
 </details>
 
-`SyncZarrWriter` is create-only: it never replaces an existing object and writes
-the primary metadata object last. A successful `WriteReceipt` identifies a
-complete publication. Reads return the decoded block together with an
-`ExecutionReceipt` containing actual requests and byte counters.
+On the JVM, `JvmZarr.createAndOpenArray(target, spec, values)` adds an explicit
+`java.nio.file.Path` boundary and stages publication atomically. In a browser,
+`BrowserZarr.createAndOpenArray(store, spec, values)` delegates to the async
+kernel with `BrowserCodecRuntime.portable`; callers still supply an
+`ExecutionContext`, object capabilities, limits, and any retry or cache policy.
 
 For a separate JVM/Scala.js consumer build, see
 [`examples/standalone-consumer`](examples/standalone-consumer).
+
 
 ## Modules and platforms
 
@@ -112,9 +219,10 @@ dependency.
 
 | Concern | Main API | Contract |
 | --- | --- | --- |
+| Typed create/read | `ArraySpec`, `DenseArray`, `SyncZarr`, `AsyncZarr` | Checked dtype/shape intent, owned values, typed handles, create-only outcomes, and execution receipts. |
 | Metadata | `ZarrMetadata`, `ArrayDescriptor` | Parse and compile supported metadata into typed descriptors; unsupported required metadata returns `ZarrError`. |
-| Reading | `SyncZarr`, `AsyncZarr` | Open arrays and groups, read regions or points, and materialize or fold selected fragments. |
-| Writing | `SyncZarrWriter`, `AsyncZarrWriter` | Create arrays and groups without overwrite, resize, append, or concurrent mutation. |
+| Reading | `SyncZarr`, `AsyncZarr`, `TypedOpenedArray` | Open arrays and groups, read all/regions/points, and materialize or fold selected fragments. |
+| Writing | `SyncZarr`, `AsyncZarr`, `SyncZarrWriter`, `AsyncZarrWriter` | Create arrays and groups without overwrite, resize, append, or concurrent mutation. |
 | Storage | `ObjectReader`, `ObjectWriter` and async variants | Callers provide object and listing capabilities; the core does not assume a filesystem or cloud service. |
 | Caching | `CachingObjectReader`, `CachingAsyncObjectReader` | Revision-scoped, bounded, deterministic LRU reuse with no global cache policy. |
 | Codecs | `CodecCapability`, codec executors, `CodecProgram` | Metadata validation and execution are separate; providers supply platform algorithms explicitly. |
@@ -153,17 +261,17 @@ indices and duplicates remain in the requested order.
 
 ```scala
 val selected = for
-  boldShape <- Shape(1200L, 100L)
-  time <- AxisSelector.slice(0L, 1200L, step = 2L)
-  voxels <- AxisSelector.indices(3L, 11L, 42L, 11L)
-  selection <- FactoredSelection(boldShape, time, voxels)
+  arrayShape <- Shape(1200L, 100L)
+  firstAxis <- AxisSelector.slice(0L, 1200L, step = 2L)
+  secondAxis <- AxisSelector.indices(3L, 11L, 42L, 11L)
+  selection <- FactoredSelection(arrayShape, firstAxis, secondAxis)
 yield selection
 ```
 
 </details>
 
 `selected` is an `Either[ZarrError, FactoredSelection]`. Pass the successful
-selection to `OpenedArray.read`; the duplicate voxel index `11` is preserved.
+selection to `OpenedArray.read`; the duplicate index `11` is preserved.
 `foldFragments` and `foreachFragment` expose the same chunk-local interpreter
 with explicit output placement and bounded synchronous or asynchronous
 backpressure.
@@ -191,6 +299,19 @@ caches, prefetch or retention policy, mutation, or every Zarr extension.
 Variable-length and structured values, v2 object arrays, and v2 filters beyond
 shuffle and dtype-aware delta are not claimed. Unsupported metadata fails
 through `ZarrError` instead of being guessed at. Descending slices are rejected.
+
+## Documentation map
+
+- [Standalone consumer](examples/standalone-consumer/) — compile and run a
+  public-artifact JVM/Scala.js consumer.
+- [Design and verification records](docs/README.md) — current guarantees,
+  support decisions, and historical measurements.
+- [Common Zarr support](docs/plans/zarr-z9-common-zarr-support.md) — supported
+  metadata, selection, store, and codec boundaries.
+- [Typed façade evidence](docs/plans/zarr-z10-evidence.md) — executable
+  cross-platform, consumer, and interoperability evidence.
+- [Optional codec provider](codec-blosc-zstd/README.md) — explicit Blosc and
+  Zstandard setup and platform caveats.
 
 ## Interoperability and verification
 
@@ -238,3 +359,7 @@ sbt 'consumerJVM/compile' 'consumerJS/compile'
 The optional provider has its own setup instructions in
 [`codec-blosc-zstd/README.md`](codec-blosc-zstd/README.md). Design and
 verification notes are indexed in [`docs/README.md`](docs/README.md).
+
+## License
+
+`zarr4s` is released under the [Apache License 2.0](LICENSE).

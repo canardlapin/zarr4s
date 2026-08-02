@@ -21,7 +21,8 @@ lazy val consumer =
       libraryDependencies += "io.github.canardlapin" %%% "zarr4s-core" % zarr4sVersion
     )
     .jsSettings(
-      scalaJSLinkerConfig ~= (_.withModuleKind(ModuleKind.CommonJSModule))
+      scalaJSLinkerConfig ~= (_.withModuleKind(ModuleKind.CommonJSModule)),
+      scalaJSUseMainModuleInitializer := true
     )
 
 lazy val consumerJVM = consumer.jvm

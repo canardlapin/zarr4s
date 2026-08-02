@@ -58,6 +58,39 @@ def verify_scala(root: Path) -> None:
     assert (root / "v2-gzip.zarr" / ".zattrs").is_file()
     assert (root / "v2-gzip.zarr" / "0" / "0").is_file()
 
+    facade_direct = zarr.open_array(root / "facade-direct.zarr", mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(facade_direct[:]),
+        np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int16),
+    )
+
+    facade_border = zarr.open_array(root / "facade-border.zarr", mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(facade_border[:]),
+        np.arange(1, 13, dtype=np.int16).reshape(3, 4),
+    )
+
+    facade_fill_path = root / "facade-fill.zarr"
+    facade_fill = zarr.open_array(facade_fill_path, mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(facade_fill[:]),
+        np.full((3, 4), 7, dtype=np.int16),
+    )
+    assert sorted(path.name for path in facade_fill_path.iterdir()) == ["zarr.json"]
+
+    facade_sharded = zarr.open_array(root / "facade-sharded.zarr", mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(facade_sharded[:]),
+        np.arange(1, 17, dtype=np.int16).reshape(4, 4),
+    )
+
+    facade_v2 = zarr.open_array(root / "facade-v2.zarr", mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(facade_v2[:]),
+        np.array([[7, 8, 9], [10, 11, 12]], dtype=np.int16),
+    )
+    assert (root / "facade-v2.zarr" / ".zarray").is_file()
+
     scalar_values = {
         "bool": [False, True, False, True, True, False],
         "int8": [-128, -1, 0, 1, 42, 127],

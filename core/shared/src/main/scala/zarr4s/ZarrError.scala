@@ -2,6 +2,7 @@ package zarr4s
 
 enum ZarrError:
   case InvalidShape(detail: String)
+  case DTypeMismatch(expected: String, actual: String, context: String)
   case InvalidCoordinate(detail: String)
   case RankMismatch(expected: Int, actual: Int, context: String)
   case OutOfBounds(detail: String)
@@ -24,7 +25,9 @@ enum ZarrError:
   case ResourceLimit(resource: String, limit: Long, requested: Long)
 
   def message: String = this match
-    case InvalidShape(detail)                    => s"invalid shape: $detail"
+    case InvalidShape(detail)                     => s"invalid shape: $detail"
+    case DTypeMismatch(expected, actual, context) =>
+      s"data type mismatch for $context: expected $expected, found $actual"
     case InvalidCoordinate(detail)               => s"invalid coordinate: $detail"
     case RankMismatch(expected, actual, context) =>
       s"rank mismatch for $context: expected $expected, found $actual"

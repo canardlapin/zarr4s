@@ -138,3 +138,28 @@ object StandaloneConsumer:
         capabilities,
         runtime = runtime
       )
+
+  /** The README front door, compiled against the published public artifact. */
+  def typedQuickstart(): Either[ZarrError, Vector[Short]] =
+    for
+      shape <- Shape(2L, 3L)
+      chunks <- Shape(2L, 3L)
+      spec <- ArraySpec(DType.Int16, shape, chunks)
+      values <- DenseArray.copyOf(
+        DType.Int16,
+        shape,
+        Array[Short](1, 2, 3, 4, 5, 6)
+      )
+      store <- MemoryStore.empty
+      created <- SyncZarr.createAndOpenArray(store, spec, values)
+      opened <- created.opened
+      read <- opened.readAll()
+    yield read.data.toArray.toVector
+
+object StandaloneConsumerMain:
+  def main(_args: Array[String]): Unit =
+    StandaloneConsumer.typedQuickstart() match
+      case Right(values) if values == Vector[Short](1, 2, 3, 4, 5, 6) => ()
+      case Right(values) =>
+        throw IllegalStateException(s"unexpected typed values: $values")
+      case Left(error) => throw IllegalArgumentException(error.message)

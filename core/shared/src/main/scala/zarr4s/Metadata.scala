@@ -681,6 +681,23 @@ object ZarrMetadata:
     case Some(_)                     => Left(ZarrError.InvalidMetadata(path, "must be a boolean"))
 
 object ArrayDescriptor:
+  def direct[D <: DType](
+      spec: ArraySpec[D],
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  ): Either[ZarrError, ArrayDescriptor] =
+    ProgrammaticDescriptor.direct(spec, codecs, chunkKey, capabilities)
+
+  def sharded[D <: DType](
+      spec: ArraySpec[D],
+      sharding: ShardingSpec,
+      outerCodecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  ): Either[ZarrError, ArrayDescriptor] =
+    ProgrammaticDescriptor.sharded(spec, sharding, outerCodecs, chunkKey, capabilities)
+
   def compile(
       metadata: ArrayMetadata,
       capabilities: ZarrCapabilities = ZarrCapabilities()

@@ -148,6 +148,8 @@ final class MemoryStore private[zarr4s] (
     objects.iterator.map((key, bytes) => key -> OwnedBytes.copyOf(bytes.values)).toMap
 
 object MemoryStore:
+  def empty: Either[ZarrError, MemoryStore] = apply(Map.empty)
+
   def apply(objects: Map[String, OwnedBytes]): Either[ZarrError, MemoryStore] =
     val iterator = objects.keysIterator
     while iterator.hasNext do

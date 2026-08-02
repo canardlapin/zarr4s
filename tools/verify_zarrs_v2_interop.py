@@ -25,15 +25,25 @@ use std::sync::Arc;
 use zarrs::array::{Array, ArraySubset};
 use zarrs::filesystem::FilesystemStore;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = env::args().nth(1).ok_or("expected a Zarr array path")?;
+fn read(path: &Path, expected: &[i16]) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(FilesystemStore::new(Path::new(&path))?);
     let array = Array::open(store, "/")?;
     let values: Vec<i16> = array.retrieve_array_subset::<Vec<i16>>(
         &ArraySubset::new_with_shape(array.shape().to_vec()),
     )?;
-    assert_eq!(values, vec![1, -2, 300, 4, 5, -6]);
+    assert_eq!(values, expected);
     println!("zarrs 0.23.13 read {:?}: {:?}", array.shape(), values);
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let root = env::args().nth(1).ok_or("expected a fixture directory")?;
+    let root = Path::new(&root);
+    read(
+        &root.join("v2-gzip.zarr"),
+        &[1, -2, 300, 4, 5, -6],
+    )?;
+    read(&root.join("facade-v2.zarr"), &[7, 8, 9, 10, 11, 12])?;
     Ok(())
 }
 '''
@@ -43,9 +53,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
     arguments = parser.parse_args()
-    fixture = arguments.root / "v2-gzip.zarr"
-    if not fixture.is_dir():
-        parser.error(f"missing writer fixture: {fixture}")
+    for name in ("v2-gzip.zarr", "facade-v2.zarr"):
+        fixture = arguments.root / name
+        if not fixture.is_dir():
+            parser.error(f"missing writer fixture: {fixture}")
 
     with tempfile.TemporaryDirectory(prefix="zarr4s-zarrs-oracle-") as directory:
         project = Path(directory)
@@ -60,7 +71,7 @@ def main() -> None:
                 "--manifest-path",
                 str(project / "Cargo.toml"),
                 "--",
-                str(fixture),
+                str(arguments.root),
             ],
             check=True,
         )

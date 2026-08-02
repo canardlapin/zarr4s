@@ -22,33 +22,53 @@ object JvmZarrWriter:
       runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
       format: ZarrFormat = ZarrFormat.V3
   ): Either[ZarrError, WriteReceipt] =
+    createOutcome(target, descriptor, provider, limits, runtime, format).toEither
+
+  /** Atomic filesystem creation retaining incomplete writer progress for typed facades. */
+  def createOutcome(
+      target: Path,
+      descriptor: ArrayDescriptor,
+      provider: ChunkProvider,
+      limits: WriterLimits = WriterLimits(),
+      runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
+      format: ZarrFormat = ZarrFormat.V3
+  ): WriteOutcome =
+    val empty = new WriteProgress(Vector.empty, Vector.empty, 0L, 0L, 0L, 0L, ByteCount.zero)
     val absolute = target.toAbsolutePath.normalize()
     val parent = absolute.getParent
-    if parent == null then Left(ZarrError.WriteFailure("target must have a parent directory"))
+    if parent == null then
+      WriteOutcome.Incomplete(empty, ZarrError.WriteFailure("target must have a parent directory"))
     else if Files.exists(absolute) then
-      Left(ZarrError.WriteFailure(s"target already exists: $absolute"))
+      WriteOutcome.Incomplete(empty, ZarrError.WriteFailure(s"target already exists: $absolute"))
     else
-      prepare(parent, absolute).flatMap: stage =>
-        var published = false
-        try
-          for
-            store <- JvmFileStore.open(stage).left.map(ZarrError.WriteFailure.apply)
-            receipt <- SyncZarrWriter
-              .create(
-                store,
-                descriptor,
-                provider,
-                limits = limits,
-                runtime = runtime,
-                format = format
-              )
-              .toEither
-            _ <- publish(stage, absolute)
-          yield
-            published = true
-            receipt
-        catch case NonFatal(error) => Left(ZarrError.WriteFailure(error.getMessage))
-        finally if !published then deleteRecursively(stage)
+      prepare(parent, absolute) match
+        case Left(error)  => WriteOutcome.Incomplete(empty, error)
+        case Right(stage) =>
+          var published = false
+          try
+            JvmFileStore.open(stage) match
+              case Left(detail) => WriteOutcome.Incomplete(empty, ZarrError.WriteFailure(detail))
+              case Right(store) =>
+                SyncZarrWriter
+                  .create(
+                    store,
+                    descriptor,
+                    provider,
+                    limits = limits,
+                    runtime = runtime,
+                    format = format
+                  ) match
+                  case incomplete @ WriteOutcome.Incomplete(_, _) => incomplete
+                  case WriteOutcome.Complete(receipt)             =>
+                    publish(stage, absolute) match
+                      case Left(error) => WriteOutcome.Incomplete(receipt.progress, error)
+                      case Right(_)    =>
+                        published = true
+                        WriteOutcome.Complete(receipt)
+          catch
+            case NonFatal(error) =>
+              WriteOutcome.Incomplete(empty, ZarrError.WriteFailure(error.getMessage))
+          finally if !published then deleteRecursively(stage)
 
   private def prepare(parent: Path, target: Path): Either[ZarrError, Path] =
     try

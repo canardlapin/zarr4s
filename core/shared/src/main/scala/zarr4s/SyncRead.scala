@@ -114,6 +114,18 @@ final class OpenedArray private[zarr4s] (
     val format: ZarrFormat,
     runtime: SyncCodecRuntime
 ):
+  /** Read the complete logical array with the existing dynamic block result. */
+  def readAll(limits: ReadLimits = ReadLimits()): Either[ZarrError, ReadResult] =
+    for
+      origin <- Coordinate.from(Vector.fill(descriptor.shape.rank.toInt)(0L))
+      region <- Region.within(descriptor.shape, origin, descriptor.shape)
+      result <- readRegion(region, limits)
+    yield result
+
+  /** Refine this dynamic handle once against a typed dtype witness. */
+  def asTyped[D <: DType](dtype: D): Either[ZarrError, TypedOpenedArray[D]] =
+    TypedReadSupport.refine(this, dtype)
+
   def readRegion(
       region: Region,
       limits: ReadLimits = ReadLimits()
@@ -1212,6 +1224,132 @@ final class OpenedGroup private[zarr4s] (
       case OpenedNode.Array(_)     => Left(ZarrError.UnsupportedNodeType("array"))
 
 object SyncZarr:
+  def createArray[D <: DType](
+      store: ObjectWriter,
+      spec: ArraySpec[D],
+      data: DenseArray[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: SyncCodecRuntime = SyncCodecRuntime.core,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  ): Either[ZarrError, TypedWriteResult[D]] =
+    for
+      descriptor <- TypedWriteSupport.descriptor(spec, sharding, codecs, chunkKey, capabilities)
+      provider <- TypedWriteSupport.denseProvider(descriptor, spec, data)
+    yield TypedWriteSupport.result(
+      spec,
+      descriptor,
+      SyncZarrWriter.create(
+        store,
+        descriptor,
+        provider,
+        path,
+        limits,
+        runtime,
+        spec.format
+      )
+    )
+
+  def createArrayFromProvider[D <: DType](
+      store: ObjectWriter,
+      spec: ArraySpec[D],
+      provider: TypedChunkProvider[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: SyncCodecRuntime = SyncCodecRuntime.core,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  ): Either[ZarrError, TypedWriteResult[D]] =
+    for
+      descriptor <- TypedWriteSupport.descriptor(spec, sharding, codecs, chunkKey, capabilities)
+      checked <- TypedWriteSupport.typedProvider(spec, provider)
+    yield TypedWriteSupport.result(
+      spec,
+      descriptor,
+      SyncZarrWriter.create(
+        store,
+        descriptor,
+        checked,
+        path,
+        limits,
+        runtime,
+        spec.format
+      )
+    )
+
+  def createFillArray[D <: DType](
+      store: ObjectWriter,
+      spec: ArraySpec[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: SyncCodecRuntime = SyncCodecRuntime.core,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  ): Either[ZarrError, TypedWriteResult[D]] =
+    TypedWriteSupport
+      .descriptor(spec, sharding, codecs, chunkKey, capabilities)
+      .map: descriptor =>
+        TypedWriteSupport.result(
+          spec,
+          descriptor,
+          SyncZarrWriter.create(
+            store,
+            descriptor,
+            ChunkProvider.fill(descriptor),
+            path,
+            limits,
+            runtime,
+            spec.format
+          )
+        )
+
+  def createAndOpenArray[D <: DType](
+      store: ObjectWriter & ObjectReader,
+      spec: ArraySpec[D],
+      data: DenseArray[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: SyncCodecRuntime = SyncCodecRuntime.core,
+      openLimits: OpenLimits = OpenLimits(),
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  ): Either[ZarrError, TypedCreateAndOpen[D]] =
+    createArray(
+      store,
+      spec,
+      data,
+      sharding,
+      codecs,
+      chunkKey,
+      path,
+      limits,
+      runtime,
+      capabilities
+    ).flatMap: result =>
+      TypedWriteSupport.open(store, result, capabilities, openLimits, runtime, path)
+
+  def openTypedArray[D <: DType](
+      store: ObjectReader,
+      dtype: D,
+      path: ZarrPath = ZarrPath.root,
+      capabilities: ZarrCapabilities = ZarrCapabilities(),
+      limits: OpenLimits = OpenLimits(),
+      runtime: SyncCodecRuntime = SyncCodecRuntime.core,
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[ObjectLister] = None
+  ): Either[ZarrError, TypedOpenedArray[D]] =
+    openArray(store, path, capabilities, limits, runtime, consolidation, lister).flatMap:
+      _.asTyped(dtype)
+
   def openArray(
       store: ObjectReader,
       path: ZarrPath = ZarrPath.root,

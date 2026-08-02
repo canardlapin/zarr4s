@@ -14,6 +14,78 @@ object WriterFixtureMain:
     writeTransposeV2(parent.resolve("transpose-v2.zarr"))
     writeV2Gzip(parent.resolve("v2-gzip.zarr"))
     writeScalars(parent)
+    writeFacadeDirect(parent.resolve("facade-direct.zarr"))
+    writeFacadeBorder(parent.resolve("facade-border.zarr"))
+    writeFacadeFill(parent.resolve("facade-fill.zarr"))
+    writeFacadeSharded(parent.resolve("facade-sharded.zarr"))
+    writeFacadeV2(parent.resolve("facade-v2.zarr"))
+
+  private def writeFacadeDirect(target: Path): Unit =
+    val shape = Shape(2L, 3L).toOption.get
+    val spec = ArraySpec(DType.Int16, shape, shape).toOption.get
+    val data = DenseArray
+      .copyOf(DType.Int16, shape, Array[Short](1, 2, 3, 4, 5, 6))
+      .toOption
+      .get
+    writeTyped(target, spec, data)
+
+  private def writeFacadeBorder(target: Path): Unit =
+    val shape = Shape(3L, 4L).toOption.get
+    val chunks = Shape(2L, 3L).toOption.get
+    val spec = ArraySpec(DType.Int16, shape, chunks).toOption.get
+    val data = DenseArray
+      .copyOf(DType.Int16, shape, Array.tabulate[Short](12)(index => (index + 1).toShort))
+      .toOption
+      .get
+    writeTyped(target, spec, data)
+
+  private def writeFacadeFill(target: Path): Unit =
+    val shape = Shape(3L, 4L).toOption.get
+    val chunks = Shape(2L, 3L).toOption.get
+    val spec = ArraySpec(DType.Int16, shape, chunks).toOption.get.withFill(7.toShort)
+    writeTypedFill(target, spec)
+
+  private def writeFacadeSharded(target: Path): Unit =
+    val shape = Shape(4L, 4L).toOption.get
+    val spec = ArraySpec(DType.Int16, shape, shape).toOption.get
+    val data = DenseArray
+      .copyOf(DType.Int16, shape, Array.tabulate[Short](16)(index => (index + 1).toShort))
+      .toOption
+      .get
+    val sharding = ShardingSpec.indexed(Shape(2L, 2L).toOption.get)
+    writeTyped(target, spec, data, Some(sharding))
+
+  private def writeFacadeV2(target: Path): Unit =
+    val shape = Shape(2L, 3L).toOption.get
+    val spec = ArraySpec(DType.Int16, shape, shape).toOption.get.asFormat(ZarrFormat.V2)
+    val data = DenseArray
+      .copyOf(DType.Int16, shape, Array[Short](7, 8, 9, 10, 11, 12))
+      .toOption
+      .get
+    writeTyped(target, spec, data)
+
+  private def writeTyped[D <: DType](
+      target: Path,
+      spec: ArraySpec[D],
+      data: DenseArray[D],
+      sharding: Option[ShardingSpec] = None
+  ): Unit =
+    JvmZarr.createArray(target, spec, data, sharding = sharding) match
+      case Left(error)   => throw new IllegalStateException(error.message)
+      case Right(result) =>
+        result.outcome match
+          case WriteOutcome.Complete(_)          => ()
+          case WriteOutcome.Incomplete(_, error) =>
+            throw new IllegalStateException(error.message)
+
+  private def writeTypedFill[D <: DType](target: Path, spec: ArraySpec[D]): Unit =
+    JvmZarr.createFillArray(target, spec) match
+      case Left(error)   => throw new IllegalStateException(error.message)
+      case Right(result) =>
+        result.outcome match
+          case WriteOutcome.Complete(_)          => ()
+          case WriteOutcome.Incomplete(_, error) =>
+            throw new IllegalStateException(error.message)
 
   private def writeRankFive(target: Path): Unit =
     val metadata =

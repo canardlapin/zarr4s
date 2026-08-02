@@ -43,6 +43,19 @@ final class AsyncOpenedArray private[zarr4s] (
     val format: ZarrFormat,
     runtime: AsyncCodecRuntime
 )(using ExecutionContext):
+  def readAll(
+      limits: ReadLimits = ReadLimits()
+  ): Future[Either[ZarrError, ReadResult]] =
+    Coordinate.from(Vector.fill(descriptor.shape.rank.toInt)(0L)) match
+      case Left(error)   => Future.successful(Left(error))
+      case Right(origin) =>
+        Region.within(descriptor.shape, origin, descriptor.shape) match
+          case Left(error)   => Future.successful(Left(error))
+          case Right(region) => readRegion(region, limits)
+
+  def asTyped[D <: DType](dtype: D): Either[ZarrError, AsyncTypedOpenedArray[D]] =
+    TypedReadSupport.refine(this, dtype)
+
   def readRegion(
       region: Region,
       limits: ReadLimits = ReadLimits()
@@ -1498,6 +1511,138 @@ final class AsyncOpenedGroup private[zarr4s] (
       case AsyncOpenedNode.Array(_)     => Left(ZarrError.UnsupportedNodeType("array")))
 
 object AsyncZarr:
+  def createArray[D <: DType](
+      store: AsyncObjectWriter,
+      spec: ArraySpec[D],
+      data: DenseArray[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  )(using ExecutionContext): Future[Either[ZarrError, TypedWriteResult[D]]] =
+    val prepared = for
+      descriptor <- TypedWriteSupport.descriptor(spec, sharding, codecs, chunkKey, capabilities)
+      provider <- TypedWriteSupport.denseProvider(descriptor, spec, data)
+    yield descriptor -> provider
+    prepared match
+      case Left(error)                   => Future.successful(Left(error))
+      case Right((descriptor, provider)) =>
+        AsyncZarrWriter
+          .create(
+            store,
+            descriptor,
+            AsyncChunkProvider.fromSync(provider),
+            path,
+            limits,
+            runtime,
+            spec.format
+          )
+          .map(outcome => Right(TypedWriteSupport.result(spec, descriptor, outcome)))
+
+  def createArrayFromProvider[D <: DType](
+      store: AsyncObjectWriter,
+      spec: ArraySpec[D],
+      provider: TypedChunkProvider[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  )(using ExecutionContext): Future[Either[ZarrError, TypedWriteResult[D]]] =
+    val prepared = for
+      descriptor <- TypedWriteSupport.descriptor(spec, sharding, codecs, chunkKey, capabilities)
+      checked <- TypedWriteSupport.typedProvider(spec, provider)
+    yield descriptor -> checked
+    prepared match
+      case Left(error)                  => Future.successful(Left(error))
+      case Right((descriptor, checked)) =>
+        AsyncZarrWriter
+          .create(
+            store,
+            descriptor,
+            AsyncChunkProvider.fromSync(checked),
+            path,
+            limits,
+            runtime,
+            spec.format
+          )
+          .map(outcome => Right(TypedWriteSupport.result(spec, descriptor, outcome)))
+
+  def createFillArray[D <: DType](
+      store: AsyncObjectWriter,
+      spec: ArraySpec[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  )(using ExecutionContext): Future[Either[ZarrError, TypedWriteResult[D]]] =
+    TypedWriteSupport.descriptor(spec, sharding, codecs, chunkKey, capabilities) match
+      case Left(error)       => Future.successful(Left(error))
+      case Right(descriptor) =>
+        AsyncZarrWriter
+          .create(
+            store,
+            descriptor,
+            AsyncChunkProvider.fromSync(ChunkProvider.fill(descriptor)),
+            path,
+            limits,
+            runtime,
+            spec.format
+          )
+          .map(outcome => Right(TypedWriteSupport.result(spec, descriptor, outcome)))
+
+  def createAndOpenArray[D <: DType](
+      store: AsyncObjectWriter & AsyncObjectReader,
+      spec: ArraySpec[D],
+      data: DenseArray[D],
+      sharding: Option[ShardingSpec] = None,
+      codecs: Vector[ArrayCodecSpec] = Vector.empty,
+      chunkKey: Option[ChunkKeySpec] = None,
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits(),
+      runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
+      openLimits: OpenLimits = OpenLimits(),
+      capabilities: ZarrCapabilities = ZarrCapabilities()
+  )(using ExecutionContext): Future[Either[ZarrError, AsyncTypedCreateAndOpen[D]]] =
+    createArray(
+      store,
+      spec,
+      data,
+      sharding,
+      codecs,
+      chunkKey,
+      path,
+      limits,
+      runtime,
+      capabilities
+    ).flatMap:
+      case Left(error)   => Future.successful(Left(error))
+      case Right(result) =>
+        TypedWriteSupport
+          .openAsync(store, result, capabilities, openLimits, runtime, path)
+          .map(Right(_))
+
+  def openTypedArray[D <: DType](
+      store: AsyncObjectReader,
+      dtype: D,
+      path: ZarrPath = ZarrPath.root,
+      capabilities: ZarrCapabilities = ZarrCapabilities(),
+      limits: OpenLimits = OpenLimits(),
+      runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[AsyncObjectLister] = None
+  )(using ExecutionContext): Future[Either[ZarrError, AsyncTypedOpenedArray[D]]] =
+    openArray(store, path, capabilities, limits, runtime, consolidation, lister).map:
+      _.flatMap(_.asTyped(dtype))
+
   def openArray(
       store: AsyncObjectReader,
       path: ZarrPath = ZarrPath.root,
