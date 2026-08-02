@@ -11,10 +11,18 @@ enum NodeKind:
 
 final case class HierarchyLimits(
     maxConsolidatedEntries: Int = 300000,
-    maxConsolidatedNodes: Int = 100000
+    maxConsolidatedNodes: Int = 100000,
+    maxDiscoveryEntries: Int = 300000,
+    maxDiscoveryNodes: Int = 100000,
+    maxDiscoveryDepth: Int = 128,
+    maxDiscoveryMetadataReads: Int = 10000
 ):
   require(maxConsolidatedEntries >= 0, "maxConsolidatedEntries must be non-negative")
   require(maxConsolidatedNodes >= 0, "maxConsolidatedNodes must be non-negative")
+  require(maxDiscoveryEntries >= 0, "maxDiscoveryEntries must be non-negative")
+  require(maxDiscoveryNodes >= 0, "maxDiscoveryNodes must be non-negative")
+  require(maxDiscoveryDepth >= 0, "maxDiscoveryDepth must be non-negative")
+  require(maxDiscoveryMetadataReads >= 0, "maxDiscoveryMetadataReads must be non-negative")
 
 final case class HierarchyEntry(path: ZarrPath, kind: NodeKind, format: ZarrFormat)
 
@@ -61,6 +69,212 @@ private[zarr4s] final class HierarchyIndex private (
       else !entry.path.value.drop(prefix.length).contains('/')
 
 private[zarr4s] object HierarchyIndex:
+  private[zarr4s] final case class ListedNode(
+      path: ZarrPath,
+      v3: Option[StoreKey],
+      v2Group: Option[StoreKey],
+      v2Array: Option[StoreKey],
+      v2Attributes: Option[StoreKey]
+  )
+
+  def listedNodes(
+      base: ZarrPath,
+      keys: Vector[StoreKey],
+      limits: HierarchyLimits
+  ): Either[ZarrError, Vector[ListedNode]] =
+    if keys.length > limits.maxDiscoveryEntries then
+      Left(
+        ZarrError.ResourceLimit(
+          "hierarchy discovery listing entries",
+          limits.maxDiscoveryEntries,
+          keys.length
+        )
+      )
+    else
+      val prefix = if base.value.isEmpty then "" else s"${base.value}/"
+      val candidates = scala.collection.mutable.Map.empty[String, ListedNode]
+      var index = 0
+      while index < keys.length do
+        val key = keys(index)
+        val value = key.value
+        if !prefix.isEmpty && !value.startsWith(prefix) then
+          return Left(
+            ZarrError.InvalidMetadata(
+              "$.listing",
+              s"lister returned key outside prefix '${base.value}': $value"
+            )
+          )
+        val relative = if prefix.isEmpty then value else value.drop(prefix.length)
+        val suffix =
+          if relative == "zarr.json" || relative.endsWith("/zarr.json") then Some("zarr.json")
+          else if relative == ".zgroup" || relative.endsWith("/.zgroup") then Some(".zgroup")
+          else if relative == ".zarray" || relative.endsWith("/.zarray") then Some(".zarray")
+          else if relative == ".zattrs" || relative.endsWith("/.zattrs") then Some(".zattrs")
+          else None
+        suffix match
+          case None              => ()
+          case Some(foundSuffix) =>
+            val nodeRelative = relative.dropRight(foundSuffix.length).stripSuffix("/")
+            if nodeRelative.nonEmpty then
+              val path = base.resolve(nodeRelative) match
+                case Left(error)  => return Left(error)
+                case Right(found) => found
+              val depth = nodeRelative.split('/').length
+              if depth > limits.maxDiscoveryDepth then
+                return Left(
+                  ZarrError.ResourceLimit(
+                    "hierarchy discovery depth",
+                    limits.maxDiscoveryDepth,
+                    depth
+                  )
+                )
+              val existing = candidates.getOrElse(
+                path.value,
+                ListedNode(path, None, None, None, None)
+              )
+              val updated = foundSuffix match
+                case "zarr.json" if existing.v3.nonEmpty =>
+                  return Left(
+                    ZarrError.InvalidMetadata(
+                      "$.listing",
+                      s"duplicate zarr.json for '${path.value}'"
+                    )
+                  )
+                case ".zgroup" if existing.v2Group.nonEmpty =>
+                  return Left(
+                    ZarrError.InvalidMetadata(
+                      "$.listing",
+                      s"duplicate .zgroup for '${path.value}'"
+                    )
+                  )
+                case ".zarray" if existing.v2Array.nonEmpty =>
+                  return Left(
+                    ZarrError.InvalidMetadata(
+                      "$.listing",
+                      s"duplicate .zarray for '${path.value}'"
+                    )
+                  )
+                case ".zattrs" if existing.v2Attributes.nonEmpty =>
+                  return Left(
+                    ZarrError.InvalidMetadata(
+                      "$.listing",
+                      s"duplicate .zattrs for '${path.value}'"
+                    )
+                  )
+                case "zarr.json" => existing.copy(v3 = Some(key))
+                case ".zgroup"   => existing.copy(v2Group = Some(key))
+                case ".zarray"   => existing.copy(v2Array = Some(key))
+                case ".zattrs"   => existing.copy(v2Attributes = Some(key))
+                case _           => existing
+              candidates.update(path.value, updated)
+        index += 1
+      val nodes = candidates.values.toVector.sortBy(_.path.value)
+      if nodes.length > limits.maxDiscoveryNodes then
+        Left(
+          ZarrError.ResourceLimit(
+            "hierarchy discovery nodes",
+            limits.maxDiscoveryNodes,
+            nodes.length
+          )
+        )
+      else
+        val conflict = nodes.find: node =>
+          (node.v3.nonEmpty &&
+            (node.v2Group.nonEmpty || node.v2Array.nonEmpty || node.v2Attributes.nonEmpty)) ||
+            (node.v2Group.nonEmpty && node.v2Array.nonEmpty)
+        conflict match
+          case Some(node) =>
+            Left(
+              ZarrError.InvalidMetadata(
+                "$.listing",
+                s"conflicting metadata formats for '${node.path.value}'"
+              )
+            )
+          case None
+              if nodes
+                .exists(node => node.v3.isEmpty && node.v2Group.isEmpty && node.v2Array.isEmpty) =>
+            val orphan =
+              nodes.find(node => node.v3.isEmpty && node.v2Group.isEmpty && node.v2Array.isEmpty)
+            Left(
+              ZarrError.InvalidMetadata(
+                "$.listing",
+                s"orphan v2 attributes for '${orphan.map(_.path.value).getOrElse("")}'"
+              )
+            )
+          case None =>
+            val metadataReads = nodes
+              .map(node =>
+                (if node.v3.nonEmpty || node.v2Group.nonEmpty || node.v2Array.nonEmpty then 1
+                 else 0) +
+                  (if node.v2Attributes.nonEmpty then 1 else 0)
+              )
+              .sum
+            if metadataReads > limits.maxDiscoveryMetadataReads then
+              Left(
+                ZarrError.ResourceLimit(
+                  "hierarchy discovery metadata reads",
+                  limits.maxDiscoveryMetadataReads,
+                  metadataReads
+                )
+              )
+            else Right(nodes)
+
+  def discovered(
+      base: ZarrPath,
+      root: HierarchyDocument,
+      documents: Vector[(ZarrPath, HierarchyDocument)],
+      limits: HierarchyLimits
+  ): Either[ZarrError, HierarchyIndex] =
+    val all = scala.collection.mutable.Map(base.value -> root)
+    var index = 0
+    while index < documents.length do
+      val (path, document) = documents(index)
+      if path == base || all.contains(path.value) then
+        return Left(
+          ZarrError.InvalidMetadata("$.listing", s"duplicate hierarchy node '${path.value}'")
+        )
+      if document.format != root.format then
+        return Left(
+          ZarrError.InvalidMetadata(
+            "$.listing",
+            s"mixed metadata formats at '${path.value}'"
+          )
+        )
+      all.update(path.value, document)
+      index += 1
+    if all.size > limits.maxDiscoveryNodes + 1L then
+      Left(
+        ZarrError.ResourceLimit(
+          "hierarchy discovery nodes",
+          limits.maxDiscoveryNodes,
+          all.size - 1L
+        )
+      )
+    else
+      val paths = all.keysIterator
+      while paths.hasNext do
+        val pathValue = paths.next()
+        if pathValue != base.value then
+          val relative =
+            if base.value.isEmpty then pathValue else pathValue.drop(base.value.length + 1)
+          val parts = relative.split('/')
+          var depth = 1
+          while depth < parts.length do
+            val ancestor =
+              if base.value.isEmpty then parts.take(depth).mkString("/")
+              else s"${base.value}/${parts.take(depth).mkString("/")}"
+            all.get(ancestor) match
+              case Some(document) if document.kind == NodeKind.Array =>
+                return Left(
+                  ZarrError.InvalidMetadata(
+                    "$.listing",
+                    s"array node '$ancestor' cannot contain descendant '$pathValue'"
+                  )
+                )
+              case _ => ()
+            depth += 1
+      Right(new HierarchyIndex(all.toMap))
+
   def v3(
       base: ZarrPath,
       root: GroupMetadata,

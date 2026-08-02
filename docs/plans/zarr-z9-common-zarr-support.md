@@ -36,21 +36,20 @@ constitute evidence that this implementation supports a feature.
 
 | Surface | Current support | Evidence boundary |
 | --- | --- | --- |
-| V3 hierarchy | Groups, arrays, explicit navigation, bounded inline consolidation | JVM and Scala.js hierarchy suites and independent metadata fixtures |
+| V3 hierarchy | Groups, arrays, explicit navigation, bounded inline consolidation, and bounded un-consolidated discovery through optional listing capabilities | JVM and Scala.js hierarchy/listing suites and independent metadata fixtures; HTTP/Fetch listing remains caller-provided |
 | V3 grid and keys | Regular grids, default keys, v2-compatible keys, scalar and arbitrary runtime rank | Shared geometry, grid, key, reader, and writer suites |
 | V3 data types | `bool`, signed and unsigned integers 8/16/32/64, `float16`, `float32`, `float64`, `complex64`, `complex128`, and byte-multiple raw `rN` | Exact fill, endian, byte, selection, transpose, and independent Zarr-Python payload tests |
 | V3 common codecs | Bytes, transpose, gzip, CRC32C, and indexed sharding at start or end | Direct and sharded JVM/Scala.js fixtures, including writer output |
 | Optional codecs | Blosc and standalone Zstandard in `zarr4s-codec-blosc-zstd` | Provider metadata, bounded/corruption, direct, sharded, JVM, and Scala.js suites |
-| V2 reading | Groups and arrays lowered into the shared descriptor; C/F order; endian; dot/slash keys; consolidated metadata | V2 metadata, hierarchy, reader, and external compatibility fixtures |
+| V2 reading | Groups and arrays lowered into the shared descriptor; C/F order; endian; dot/slash keys; consolidated and listing-backed un-consolidated metadata | V2 metadata, hierarchy/listing, reader, and external compatibility fixtures |
 | V2 codecs | gzip, zlib, common shuffle, and optional Blosc/Zstandard provider paths | V2 metadata and end-to-end fixtures; unsupported codecs fail typed |
 | Writing | Create-only V3 arrays and groups over sync/async object capabilities | Shared writer and JVM filesystem publication suites |
-| Stores | Whole-object, range, and length reads; immutable object creation; bounded memory, filesystem, HTTP, and Fetch adapters | Store and transport suites |
+| Stores | Whole-object, range, and length reads; optional bounded listing; immutable object creation; bounded memory, filesystem, HTTP, and Fetch adapters | Store, listing, and transport suites; HTTP/Fetch listing remains an explicit caller capability |
 
 ### Planned common slices
 
 | Slice | Intended claim | Required proof |
 | --- | --- | --- |
-| Listing capability | Optional `ObjectLister` and `AsyncObjectLister`; un-consolidated child discovery where the store can list | Memory/JVM listing, bounded discovery, explicit HTTP/Fetch capability behavior |
 | V2 delta | Dtype-aware v2 delta filter with correct `dtype`/`astype` and reverse execution | Independent delta fixtures, C/F and endian combinations, shuffle/compressor composition |
 | Sharding parity | Outer codec support and lawful fixed-size index codec profiles | Bounded whole-shard fallback, range fast path, writer output, and corruption fixtures |
 | V2 creation | Create-only `.zarray`, `.zattrs`, and `.zgroup` output from the shared descriptor | Zarr-Python and zarrs readback, deterministic keys, fill omission, interruption receipts |
@@ -135,11 +134,9 @@ external fixture evidence, or a clean dependency boundary is incomplete.
 ## Order of work
 
 1. Keep this matrix and the independent-fixture rules current.
-2. Add listing as an optional store capability so consolidated metadata is not
-   the only route to hierarchy discovery.
-3. Generalize array-codec execution and implement v2 delta.
-4. Complete sharding outer/index parity, then add create-only v2 writing.
-5. Admit additional optional codecs or extensions only after their own provider
+2. Generalize array-codec execution and implement v2 delta.
+3. Complete sharding outer/index parity, then add create-only v2 writing.
+4. Admit additional optional codecs or extensions only after their own provider
    and deployment courts pass.
 
 The epic is complete only when each planned claim has its required evidence or

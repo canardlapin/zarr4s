@@ -783,16 +783,20 @@ final class OpenedGroup private[zarr4s] (
     capabilities: ZarrCapabilities,
     limits: OpenLimits,
     runtime: SyncCodecRuntime,
-    consolidation: ConsolidationMode
+    consolidation: ConsolidationMode,
+    lister: Option[ObjectLister]
 ):
   def children: Either[ZarrError, Vector[HierarchyEntry]] = index match
     case Some(found) => Right(found.children(path))
     case None        =>
-      Left(
-        ZarrError.UnsupportedRead(
-          "hierarchy discovery requires consolidated metadata or a listing capability"
-        )
-      )
+      lister match
+        case None =>
+          Left(
+            ZarrError.UnsupportedRead(
+              "hierarchy discovery requires consolidated metadata or a listing capability"
+            )
+          )
+        case Some(found) => SyncZarr.discoverChildren(store, path, metadata, format, found, limits)
 
   def open(relativePath: String): Either[ZarrError, OpenedNode] =
     path
@@ -808,7 +812,8 @@ final class OpenedGroup private[zarr4s] (
               capabilities,
               limits,
               runtime,
-              consolidation
+              consolidation,
+              lister
             )
           case None if consolidation == ConsolidationMode.Require =>
             Left(
@@ -824,7 +829,8 @@ final class OpenedGroup private[zarr4s] (
               capabilities,
               limits,
               runtime,
-              ConsolidationMode.Ignore
+              ConsolidationMode.Ignore,
+              lister
             )
 
   def openArray(relativePath: String): Either[ZarrError, OpenedArray] =
@@ -844,9 +850,10 @@ object SyncZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: SyncCodecRuntime = SyncCodecRuntime.core,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[ObjectLister] = None
   ): Either[ZarrError, OpenedArray] =
-    openNode(store, path, capabilities, limits, runtime, consolidation).flatMap:
+    openNode(store, path, capabilities, limits, runtime, consolidation, lister).flatMap:
       case OpenedNode.Array(found) => Right(found)
       case OpenedNode.Group(_)     => Left(ZarrError.UnsupportedNodeType("group"))
 
@@ -856,9 +863,10 @@ object SyncZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: SyncCodecRuntime = SyncCodecRuntime.core,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[ObjectLister] = None
   ): Either[ZarrError, OpenedGroup] =
-    openNode(store, path, capabilities, limits, runtime, consolidation).flatMap:
+    openNode(store, path, capabilities, limits, runtime, consolidation, lister).flatMap:
       case OpenedNode.Group(found) => Right(found)
       case OpenedNode.Array(_)     => Left(ZarrError.UnsupportedNodeType("array"))
 
@@ -868,7 +876,8 @@ object SyncZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: SyncCodecRuntime = SyncCodecRuntime.core,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[ObjectLister] = None
   ): Either[ZarrError, OpenedNode] =
     readOptional(store, path, "zarr.json", limits.maxMetadataBytes).flatMap:
       case Some(json) =>
@@ -901,7 +910,8 @@ object SyncZarr:
                     capabilities,
                     limits,
                     runtime,
-                    consolidation
+                    consolidation,
+                    lister
                   )
                 )
             case ZarrNodeMetadata.Array(array) =>
@@ -913,9 +923,10 @@ object SyncZarr:
                 capabilities,
                 limits,
                 runtime,
-                consolidation
+                consolidation,
+                lister
               )
-      case None => openV2(store, path, capabilities, limits, runtime, consolidation)
+      case None => openV2(store, path, capabilities, limits, runtime, consolidation, lister)
 
   private[zarr4s] def openDocument(
       store: ObjectReader,
@@ -925,7 +936,8 @@ object SyncZarr:
       capabilities: ZarrCapabilities,
       limits: OpenLimits,
       runtime: SyncCodecRuntime,
-      consolidation: ConsolidationMode
+      consolidation: ConsolidationMode,
+      lister: Option[ObjectLister]
   ): Either[ZarrError, OpenedNode] = document.kind match
     case NodeKind.Group =>
       document.groupMetadata.map: group =>
@@ -939,7 +951,8 @@ object SyncZarr:
             capabilities,
             limits,
             runtime,
-            consolidation
+            consolidation,
+            lister
           )
         )
     case NodeKind.Array =>
@@ -962,7 +975,8 @@ object SyncZarr:
       capabilities: ZarrCapabilities,
       limits: OpenLimits,
       runtime: SyncCodecRuntime,
-      consolidation: ConsolidationMode
+      consolidation: ConsolidationMode,
+      lister: Option[ObjectLister]
   ): Either[ZarrError, OpenedNode] =
     val indexed = consolidation match
       case ConsolidationMode.Ignore => Right(None)
@@ -989,7 +1003,8 @@ object SyncZarr:
             capabilities,
             limits,
             runtime,
-            consolidation
+            consolidation,
+            lister
           )
         case None if consolidation == ConsolidationMode.Require =>
           Left(
@@ -998,14 +1013,15 @@ object SyncZarr:
               s"required metadata does not contain '${path.value}'"
             )
           )
-        case None => openV2Individual(store, path, capabilities, limits, runtime)
+        case None => openV2Individual(store, path, capabilities, limits, runtime, lister)
 
   private def openV2Individual(
       store: ObjectReader,
       path: ZarrPath,
       capabilities: ZarrCapabilities,
       limits: OpenLimits,
-      runtime: SyncCodecRuntime
+      runtime: SyncCodecRuntime,
+      lister: Option[ObjectLister]
   ): Either[ZarrError, OpenedNode] =
     readOptional(store, path, ".zarray", limits.maxMetadataBytes).flatMap:
       case Some(arrayJson) =>
@@ -1021,7 +1037,8 @@ object SyncZarr:
                 capabilities,
                 limits,
                 runtime,
-                ConsolidationMode.Ignore
+                ConsolidationMode.Ignore,
+                lister
               )
       case None =>
         readOptional(store, path, ".zgroup", limits.maxMetadataBytes).flatMap:
@@ -1040,7 +1057,8 @@ object SyncZarr:
                       capabilities,
                       limits,
                       runtime,
-                      ConsolidationMode.Ignore
+                      ConsolidationMode.Ignore,
+                      lister
                     )
                   )
           case None =>
@@ -1048,6 +1066,91 @@ object SyncZarr:
               .key(".zarray")
               .flatMap: key =>
                 Left(ZarrError.StoreFailure(StoreError.NotFound(key)))
+
+  private[zarr4s] def discoverChildren(
+      store: ObjectReader,
+      path: ZarrPath,
+      metadata: GroupMetadata,
+      format: ZarrFormat,
+      lister: ObjectLister,
+      limits: OpenLimits
+  ): Either[ZarrError, Vector[HierarchyEntry]] =
+    lister
+      .list(path, limits.hierarchy.maxDiscoveryEntries)
+      .left
+      .map(ZarrError.StoreFailure.apply)
+      .flatMap: keys =>
+        HierarchyIndex
+          .listedNodes(path, keys, limits.hierarchy)
+          .flatMap: nodes =>
+            readListedDocuments(store, nodes, limits).flatMap: documents =>
+              val root = format match
+                case ZarrFormat.V2 => HierarchyDocument.V2Group(metadata)
+                case ZarrFormat.V3 => HierarchyDocument.V3Group(metadata)
+              HierarchyIndex
+                .discovered(path, root, documents, limits.hierarchy)
+                .map(_.children(path))
+
+  private def readListedDocuments(
+      store: ObjectReader,
+      nodes: Vector[HierarchyIndex.ListedNode],
+      limits: OpenLimits
+  ): Either[ZarrError, Vector[(ZarrPath, HierarchyDocument)]] =
+    var index = 0
+    val documents = Vector.newBuilder[(ZarrPath, HierarchyDocument)]
+    var failure: Option[ZarrError] = None
+    while index < nodes.length && failure.isEmpty do
+      readListedDocument(store, nodes(index), limits) match
+        case Left(error)  => failure = Some(error)
+        case Right(found) => documents += found
+      index += 1
+    failure.toLeft(documents.result())
+
+  private def readListedDocument(
+      store: ObjectReader,
+      node: HierarchyIndex.ListedNode,
+      limits: OpenLimits
+  ): Either[ZarrError, (ZarrPath, HierarchyDocument)] =
+    node.v3 match
+      case Some(key) =>
+        readRequiredMetadata(store, key, limits.maxMetadataBytes).flatMap: json =>
+          ZarrMetadata
+            .parse(json)
+            .map:
+              case ZarrNodeMetadata.Group(group) =>
+                node.path -> HierarchyDocument.V3Group(group)
+              case ZarrNodeMetadata.Array(array) =>
+                node.path -> HierarchyDocument.V3Array(array)
+      case None =>
+        val primary = node.v2Group
+          .orElse(node.v2Array)
+          .toRight(
+            ZarrError.InvalidMetadata(
+              "$.listing",
+              s"missing primary v2 metadata for '${node.path.value}'"
+            )
+          )
+        for
+          primaryKey <- primary
+          primaryJson <- readRequiredMetadata(store, primaryKey, limits.maxMetadataBytes)
+          attributes <- node.v2Attributes match
+            case None      => Right(None)
+            case Some(key) =>
+              readRequiredMetadata(store, key, limits.maxMetadataBytes).map(Some.apply)
+          document <- node.v2Group match
+            case Some(_) =>
+              V2Metadata.parseGroup(primaryJson, attributes).map(HierarchyDocument.V2Group.apply)
+            case None =>
+              V2Metadata.parseArray(primaryJson, attributes).map(HierarchyDocument.V2Array.apply)
+        yield node.path -> document
+
+  private def readRequiredMetadata(
+      store: ObjectReader,
+      key: StoreKey,
+      limit: ByteCount
+  ): Either[ZarrError, String] = store.readAll(key, limit) match
+    case Left(error)  => Left(ZarrError.StoreFailure(error))
+    case Right(bytes) => Right(new String(bytes.values, "UTF-8"))
 
   private def readOptional(
       store: ObjectReader,

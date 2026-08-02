@@ -12,6 +12,8 @@ enum StoreError:
   case RangeIgnored(key: StoreKey, range: ByteRange)
   case ObjectTooLarge(key: StoreKey, limit: Long, actual: Long)
   case ObjectLengthUnavailable(key: StoreKey)
+  case ListingTooLarge(prefix: ZarrPath, limit: Int)
+  case ListingFailure(prefix: ZarrPath, detail: String)
   case Transport(key: StoreKey, detail: String, transient: Boolean)
 
   def message: String = this match
@@ -25,7 +27,11 @@ enum StoreError:
       s"store ignored range ${range.offset}:${range.length.toLong} for ${key.value}"
     case ObjectTooLarge(key, limit, actual) =>
       s"store object ${key.value} exceeds limit $limit with $actual bytes"
-    case ObjectLengthUnavailable(key)      => s"object length unavailable for ${key.value}"
+    case ObjectLengthUnavailable(key)   => s"object length unavailable for ${key.value}"
+    case ListingTooLarge(prefix, limit) =>
+      s"store listing for '${prefix.value}' exceeds limit $limit"
+    case ListingFailure(prefix, detail) =>
+      s"store listing failed for '${prefix.value}': $detail"
     case Transport(key, detail, transient) =>
       val kind = if transient then "transient" else "permanent"
       s"$kind store failure for ${key.value}: $detail"
@@ -44,6 +50,22 @@ trait AsyncObjectReader:
   def read(key: StoreKey, range: ByteRange): Future[Either[StoreError, OwnedBytes]]
   def readAll(key: StoreKey, maxBytes: ByteCount): Future[Either[StoreError, OwnedBytes]]
   def length(key: StoreKey): Future[Either[StoreError, Long]]
+
+/** Optional capability to enumerate all object keys strictly below a path prefix. */
+trait ObjectLister:
+  def list(prefix: ZarrPath, maxEntries: Int): Either[StoreError, Vector[StoreKey]]
+
+trait AsyncObjectLister:
+  def list(prefix: ZarrPath, maxEntries: Int): Future[Either[StoreError, Vector[StoreKey]]]
+
+object AsyncObjectLister:
+  def fromSync(lister: ObjectLister)(using scala.concurrent.ExecutionContext): AsyncObjectLister =
+    new AsyncObjectLister:
+      def list(
+          prefix: ZarrPath,
+          maxEntries: Int
+      ): Future[Either[StoreError, Vector[StoreKey]]] =
+        Future(lister.list(prefix, maxEntries))
 
 /** Capability to create one immutable object.
   *
@@ -66,7 +88,8 @@ final class MemoryStore private[zarr4s] (
     private val requests: mutable.ArrayBuffer[ObjectRequest],
     private val writes: mutable.ArrayBuffer[ObjectWrite]
 ) extends ObjectReader,
-      ObjectWriter:
+      ObjectWriter,
+      ObjectLister:
 
   def read(key: StoreKey, range: ByteRange): Either[StoreError, OwnedBytes] =
     requests += ObjectRequest.Range(key, range)
@@ -99,6 +122,20 @@ final class MemoryStore private[zarr4s] (
         objects += key.value -> OwnedBytes.copyOf(bytes.values)
         Right(())
 
+  def list(prefix: ZarrPath, maxEntries: Int): Either[StoreError, Vector[StoreKey]] =
+    if maxEntries < 0 then Left(StoreError.ListingTooLarge(prefix, maxEntries))
+    else
+      val prefixValue = if prefix.value.isEmpty then "" else s"${prefix.value}/"
+      val limit = if maxEntries == Int.MaxValue then Int.MaxValue else maxEntries + 1
+      val found = objects.keysIterator
+        .filter(key => prefixValue.isEmpty && key.nonEmpty || key.startsWith(prefixValue))
+        .filter(key => key != prefix.value)
+        .take(limit)
+        .toVector
+        .sorted
+      if found.length > maxEntries then Left(StoreError.ListingTooLarge(prefix, maxEntries))
+      else Right(found.map(StoreKey.unsafe))
+
   def trace: Vector[ObjectRequest] = requests.toVector
 
   def clearTrace(): Unit = requests.clear()
@@ -127,7 +164,8 @@ final class AsyncMemoryStore private (
     private val requests: mutable.ArrayBuffer[ObjectRequest],
     private val writes: mutable.ArrayBuffer[ObjectWrite]
 ) extends AsyncObjectReader,
-      AsyncObjectWriter:
+      AsyncObjectWriter,
+      AsyncObjectLister:
   private val sync = new MemoryStore(initial, requests, writes)
 
   def read(key: StoreKey, range: ByteRange): Future[Either[StoreError, OwnedBytes]] =
@@ -141,6 +179,12 @@ final class AsyncMemoryStore private (
 
   def create(key: StoreKey, bytes: OwnedBytes): Future[Either[StoreError, Unit]] =
     Future.successful(sync.create(key, bytes))
+
+  def list(
+      prefix: ZarrPath,
+      maxEntries: Int
+  ): Future[Either[StoreError, Vector[StoreKey]]] =
+    Future.successful(sync.list(prefix, maxEntries))
 
   def trace: Vector[ObjectRequest] = requests.toVector
 

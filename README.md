@@ -129,10 +129,14 @@ concurrent-mutation operation.
 
 `ConsolidationMode` makes index policy explicit. A caller can prefer, require,
 or ignore consolidation. Explicit paths remain navigable when an index is
-absent; enumerating children then refuses honestly because the current store
-capability has no listing operation. V3 inline consolidation is treated as an
-optional interoperability extension rather than a claim that it is part of
-the normative v3 specification.
+absent. Synchronous groups can discover un-consolidated children when the
+caller supplies an `ObjectLister`; asynchronous groups expose the same
+operation through `discoverChildren` and `AsyncObjectLister`. Memory and JVM
+filesystem stores provide listing, while HTTP and Fetch remain caller-provided
+capabilities. Without a listing capability, child enumeration refuses
+honestly. V3 inline consolidation is treated as an optional interoperability
+extension rather than a claim that it is part of the normative v3
+specification.
 
 It intentionally does not own scientific-domain profiles, mutation, v2
 writing, S3 credentials, persistent caches, prefetch or retention policy,

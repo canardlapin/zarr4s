@@ -8,9 +8,10 @@ import java.nio.file.FileAlreadyExistsException
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import scala.collection.mutable.ArrayBuffer
 import scala.util.control.NonFatal
 
-final class JvmFileStore private (root: Path) extends ObjectReader, ObjectWriter:
+final class JvmFileStore private (root: Path) extends ObjectReader, ObjectWriter, ObjectLister:
   def read(key: StoreKey, range: ByteRange): Either[StoreError, OwnedBytes] =
     resolveExisting(key).flatMap: path =>
       try
@@ -74,6 +75,50 @@ final class JvmFileStore private (root: Path) extends ObjectReader, ObjectWriter
         staged.foreach: temporary =>
           try Files.deleteIfExists(temporary)
           catch case NonFatal(_) => ()
+
+  def list(prefix: ZarrPath, maxEntries: Int): Either[StoreError, Vector[StoreKey]] =
+    if maxEntries < 0 then Left(StoreError.ListingTooLarge(prefix, maxEntries))
+    else
+      val candidate = root.resolve(prefix.value).normalize()
+      if !candidate.startsWith(root) then
+        Left(StoreError.ListingFailure(prefix, "listing prefix escapes the store root"))
+      else if !Files.exists(candidate) then Right(Vector.empty)
+      else
+        try
+          val realCandidate = candidate.toRealPath()
+          if !realCandidate.startsWith(root) then
+            Left(
+              StoreError.ListingFailure(prefix, "listing prefix resolves outside the store root")
+            )
+          else if !Files.isDirectory(realCandidate) then Right(Vector.empty)
+          else
+            val found = ArrayBuffer.empty[StoreKey]
+            val stream = Files.walk(realCandidate)
+            try
+              val iterator = stream.iterator()
+              while iterator.hasNext && found.length <= maxEntries do
+                val path = iterator.next()
+                if Files.isRegularFile(path) then
+                  val realPath = path.toRealPath()
+                  if !realPath.startsWith(root) then
+                    return Left(
+                      StoreError.ListingFailure(
+                        prefix,
+                        s"listed object resolves outside the store root: $path"
+                      )
+                    )
+                  val relative =
+                    root.relativize(path).toString.replace(java.io.File.separatorChar, '/')
+                  StoreKey.from(relative) match
+                    case Left(error) =>
+                      return Left(StoreError.ListingFailure(prefix, error.message))
+                    case Right(key) => found += key
+              if found.length > maxEntries then Left(StoreError.ListingTooLarge(prefix, maxEntries))
+              else Right(found.toVector.sortBy(_.value))
+            finally stream.close()
+        catch
+          case _: NoSuchFileException => Right(Vector.empty)
+          case NonFatal(error)        => Left(StoreError.ListingFailure(prefix, error.getMessage))
 
   private def resolveExisting(key: StoreKey): Either[StoreError, Path] =
     try

@@ -49,6 +49,22 @@ class StoreSuite extends munit.FunSuite:
     assert(store.read(key("object"), range(4L, 2L)).isLeft)
     assert(store.readAll(key("object"), zvalue(ByteCount(4L))).isLeft)
 
+  test("memory store lists recursive descendants under an explicit bound"):
+    val store = zvalue(
+      MemoryStore(
+        Map(
+          "group/zarr.json" -> OwnedBytes.copyOf(Array[Byte](1)),
+          "group/child/zarr.json" -> OwnedBytes.copyOf(Array[Byte](2)),
+          "other" -> OwnedBytes.copyOf(Array[Byte](3))
+        )
+      )
+    )
+    assertEquals(
+      store.list(zvalue(ZarrPath("group")), 10).map(_.map(_.value)),
+      Right(Vector("group/child/zarr.json", "group/zarr.json"))
+    )
+    assert(store.list(ZarrPath.root, 2).isLeft)
+
   test("range coalescing is deterministic and bounded"):
     val ranges = Vector(
       range(30L, 5L) -> "c",

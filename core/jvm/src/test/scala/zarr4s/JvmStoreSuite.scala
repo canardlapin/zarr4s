@@ -29,6 +29,19 @@ class JvmStoreSuite extends munit.FunSuite:
     assert(store.readAll(key("c/0/1"), count(5L)).isLeft)
     assert(store.readAll(key("missing"), count(10L)).isLeft)
 
+  test("filesystem store lists recursive descendants with a hard bound"):
+    val root = Files.createTempDirectory("zarr4s-core-file-list")
+    Files.createDirectories(root.resolve("group/deep"))
+    Files.write(root.resolve("group/zarr.json"), Array[Byte](1))
+    Files.write(root.resolve("group/deep/zarr.json"), Array[Byte](2))
+    Files.write(root.resolve("other"), Array[Byte](3))
+    val store = JvmFileStore.open(root).fold(fail(_), identity)
+    assertEquals(
+      store.list(zvalue(ZarrPath("group")), 10).map(_.map(_.value)),
+      Right(Vector("group/deep/zarr.json", "group/zarr.json"))
+    )
+    assert(store.list(ZarrPath.root, 2).isLeft)
+
   test("filesystem store rejects symlinks that escape its root"):
     val root = Files.createTempDirectory("zarr4s-core-confined")
     val outside = Files.createTempFile("zarr4s-core-outside", ".bin")
@@ -38,6 +51,7 @@ class JvmStoreSuite extends munit.FunSuite:
       Files.createSymbolicLink(link, outside)
       val store = JvmFileStore.open(root).fold(fail(_), identity)
       assert(store.readAll(key("escape"), count(10L)).isLeft)
+      assert(store.list(ZarrPath.root, 10).isLeft)
     catch case _: UnsupportedOperationException => ()
 
   test("HTTP store validates range status, Content-Range, and lengths"):

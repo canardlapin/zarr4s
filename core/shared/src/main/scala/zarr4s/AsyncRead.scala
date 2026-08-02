@@ -977,16 +977,32 @@ final class AsyncOpenedGroup private[zarr4s] (
     capabilities: ZarrCapabilities,
     limits: OpenLimits,
     runtime: AsyncCodecRuntime,
-    consolidation: ConsolidationMode
+    consolidation: ConsolidationMode,
+    lister: Option[AsyncObjectLister]
 )(using ExecutionContext):
   def children: Either[ZarrError, Vector[HierarchyEntry]] = index match
     case Some(found) => Right(found.children(path))
     case None        =>
       Left(
         ZarrError.UnsupportedRead(
-          "hierarchy discovery requires consolidated metadata or a listing capability"
+          "hierarchy discovery requires consolidated metadata or a listing capability; use discoverChildren for async listing"
         )
       )
+
+  def discoverChildren: Future[Either[ZarrError, Vector[HierarchyEntry]]] = index match
+    case Some(found) => Future.successful(Right(found.children(path)))
+    case None        =>
+      lister match
+        case None =>
+          Future.successful(
+            Left(
+              ZarrError.UnsupportedRead(
+                "hierarchy discovery requires consolidated metadata or a listing capability"
+              )
+            )
+          )
+        case Some(found) =>
+          AsyncZarr.discoverChildren(store, path, metadata, format, found, limits)
 
   def open(relativePath: String): Future[Either[ZarrError, AsyncOpenedNode]] =
     path.resolve(relativePath) match
@@ -1003,7 +1019,8 @@ final class AsyncOpenedGroup private[zarr4s] (
                 capabilities,
                 limits,
                 runtime,
-                consolidation
+                consolidation,
+                lister
               )
             )
           case None if consolidation == ConsolidationMode.Require =>
@@ -1022,7 +1039,8 @@ final class AsyncOpenedGroup private[zarr4s] (
               capabilities,
               limits,
               runtime,
-              ConsolidationMode.Ignore
+              ConsolidationMode.Ignore,
+              lister
             )
 
   def openArray(relativePath: String): Future[Either[ZarrError, AsyncOpenedArray]] =
@@ -1042,9 +1060,10 @@ object AsyncZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[AsyncObjectLister] = None
   )(using ExecutionContext): Future[Either[ZarrError, AsyncOpenedArray]] =
-    openNode(store, path, capabilities, limits, runtime, consolidation).map(_.flatMap:
+    openNode(store, path, capabilities, limits, runtime, consolidation, lister).map(_.flatMap:
       case AsyncOpenedNode.Array(found) => Right(found)
       case AsyncOpenedNode.Group(_)     => Left(ZarrError.UnsupportedNodeType("group")))
 
@@ -1054,9 +1073,10 @@ object AsyncZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[AsyncObjectLister] = None
   )(using ExecutionContext): Future[Either[ZarrError, AsyncOpenedGroup]] =
-    openNode(store, path, capabilities, limits, runtime, consolidation).map(_.flatMap:
+    openNode(store, path, capabilities, limits, runtime, consolidation, lister).map(_.flatMap:
       case AsyncOpenedNode.Group(found) => Right(found)
       case AsyncOpenedNode.Array(_)     => Left(ZarrError.UnsupportedNodeType("array")))
 
@@ -1066,7 +1086,8 @@ object AsyncZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: AsyncCodecRuntime = AsyncCodecRuntime.core,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[AsyncObjectLister] = None
   )(using ExecutionContext): Future[Either[ZarrError, AsyncOpenedNode]] =
     readOptional(store, path, "zarr.json", limits.maxMetadataBytes).flatMap:
       case Left(error)       => Future.successful(Left(error))
@@ -1099,7 +1120,8 @@ object AsyncZarr:
                   capabilities,
                   limits,
                   runtime,
-                  consolidation
+                  consolidation,
+                  lister
                 )
               ))
           case Right(ZarrNodeMetadata.Array(array)) =>
@@ -1112,10 +1134,11 @@ object AsyncZarr:
                 capabilities,
                 limits,
                 runtime,
-                consolidation
+                consolidation,
+                lister
               )
             )
-      case Right(None) => openV2(store, path, capabilities, limits, runtime, consolidation)
+      case Right(None) => openV2(store, path, capabilities, limits, runtime, consolidation, lister)
 
   private[zarr4s] def openDocument(
       store: AsyncObjectReader,
@@ -1125,7 +1148,8 @@ object AsyncZarr:
       capabilities: ZarrCapabilities,
       limits: OpenLimits,
       runtime: AsyncCodecRuntime,
-      consolidation: ConsolidationMode
+      consolidation: ConsolidationMode,
+      lister: Option[AsyncObjectLister]
   )(using ExecutionContext): Either[ZarrError, AsyncOpenedNode] = document.kind match
     case NodeKind.Group =>
       document.groupMetadata.map: group =>
@@ -1139,7 +1163,8 @@ object AsyncZarr:
             capabilities,
             limits,
             runtime,
-            consolidation
+            consolidation,
+            lister
           )
         )
     case NodeKind.Array =>
@@ -1168,7 +1193,8 @@ object AsyncZarr:
       capabilities: ZarrCapabilities,
       limits: OpenLimits,
       runtime: AsyncCodecRuntime,
-      consolidation: ConsolidationMode
+      consolidation: ConsolidationMode,
+      lister: Option[AsyncObjectLister]
   )(using ExecutionContext): Future[Either[ZarrError, AsyncOpenedNode]] =
     val indexed = consolidation match
       case ConsolidationMode.Ignore => Future.successful(Right(None))
@@ -1199,7 +1225,8 @@ object AsyncZarr:
                 capabilities,
                 limits,
                 runtime,
-                consolidation
+                consolidation,
+                lister
               )
             )
           case None if consolidation == ConsolidationMode.Require =>
@@ -1211,14 +1238,15 @@ object AsyncZarr:
                 )
               )
             )
-          case None => openV2Individual(store, path, capabilities, limits, runtime)
+          case None => openV2Individual(store, path, capabilities, limits, runtime, lister)
 
   private def openV2Individual(
       store: AsyncObjectReader,
       path: ZarrPath,
       capabilities: ZarrCapabilities,
       limits: OpenLimits,
-      runtime: AsyncCodecRuntime
+      runtime: AsyncCodecRuntime,
+      lister: Option[AsyncObjectLister]
   )(using ExecutionContext): Future[Either[ZarrError, AsyncOpenedNode]] =
     readOptional(store, path, ".zarray", limits.maxMetadataBytes).flatMap:
       case Left(error)            => Future.successful(Left(error))
@@ -1237,7 +1265,8 @@ object AsyncZarr:
                   capabilities,
                   limits,
                   runtime,
-                  ConsolidationMode.Ignore
+                  ConsolidationMode.Ignore,
+                  lister
                 )
       case Right(None) =>
         readOptional(store, path, ".zgroup", limits.maxMetadataBytes).flatMap:
@@ -1259,7 +1288,8 @@ object AsyncZarr:
                         capabilities,
                         limits,
                         runtime,
-                        ConsolidationMode.Ignore
+                        ConsolidationMode.Ignore,
+                        lister
                       )
                     )
           case Right(None) =>
@@ -1269,6 +1299,106 @@ object AsyncZarr:
                 .flatMap: key =>
                   Left(ZarrError.StoreFailure(StoreError.NotFound(key)))
             )
+
+  private[zarr4s] def discoverChildren(
+      store: AsyncObjectReader,
+      path: ZarrPath,
+      metadata: GroupMetadata,
+      format: ZarrFormat,
+      lister: AsyncObjectLister,
+      limits: OpenLimits
+  )(using ExecutionContext): Future[Either[ZarrError, Vector[HierarchyEntry]]] =
+    lister
+      .list(path, limits.hierarchy.maxDiscoveryEntries)
+      .flatMap:
+        case Left(error) => Future.successful(Left(ZarrError.StoreFailure(error)))
+        case Right(keys) =>
+          HierarchyIndex.listedNodes(path, keys, limits.hierarchy) match
+            case Left(error)  => Future.successful(Left(error))
+            case Right(nodes) =>
+              readListedDocuments(store, nodes, limits).map: documents =>
+                documents.flatMap: found =>
+                  val root = format match
+                    case ZarrFormat.V2 => HierarchyDocument.V2Group(metadata)
+                    case ZarrFormat.V3 => HierarchyDocument.V3Group(metadata)
+                  HierarchyIndex
+                    .discovered(path, root, found, limits.hierarchy)
+                    .map(_.children(path))
+
+  private def readListedDocuments(
+      store: AsyncObjectReader,
+      nodes: Vector[HierarchyIndex.ListedNode],
+      limits: OpenLimits
+  )(using ExecutionContext): Future[Either[ZarrError, Vector[(ZarrPath, HierarchyDocument)]]] =
+    val documents = Vector.newBuilder[(ZarrPath, HierarchyDocument)]
+    def loop(
+        index: Int
+    ): Future[Either[ZarrError, Vector[(ZarrPath, HierarchyDocument)]]] =
+      if index >= nodes.length then Future.successful(Right(documents.result()))
+      else
+        readListedDocument(store, nodes(index), limits).flatMap:
+          case Left(error)  => Future.successful(Left(error))
+          case Right(found) =>
+            documents += found
+            loop(index + 1)
+    loop(0)
+
+  private def readListedDocument(
+      store: AsyncObjectReader,
+      node: HierarchyIndex.ListedNode,
+      limits: OpenLimits
+  )(using ExecutionContext): Future[Either[ZarrError, (ZarrPath, HierarchyDocument)]] =
+    node.v3 match
+      case Some(key) =>
+        readRequiredMetadata(store, key, limits.maxMetadataBytes).map(_.flatMap: json =>
+          ZarrMetadata
+            .parse(json)
+            .map:
+              case ZarrNodeMetadata.Group(group) =>
+                node.path -> HierarchyDocument.V3Group(group)
+              case ZarrNodeMetadata.Array(array) =>
+                node.path -> HierarchyDocument.V3Array(array))
+      case None =>
+        val primary = node.v2Group
+          .orElse(node.v2Array)
+          .toRight(
+            ZarrError.InvalidMetadata(
+              "$.listing",
+              s"missing primary v2 metadata for '${node.path.value}'"
+            )
+          )
+        primary match
+          case Left(error)       => Future.successful(Left(error))
+          case Right(primaryKey) =>
+            readRequiredMetadata(store, primaryKey, limits.maxMetadataBytes).flatMap:
+              case Left(error)        => Future.successful(Left(error))
+              case Right(primaryJson) =>
+                val attributes = node.v2Attributes match
+                  case None      => Future.successful(Right(None))
+                  case Some(key) =>
+                    readRequiredMetadata(store, key, limits.maxMetadataBytes).map(_.map(Some.apply))
+                attributes.map(_.flatMap: attributesJson =>
+                  val document = node.v2Group match
+                    case Some(_) =>
+                      V2Metadata
+                        .parseGroup(primaryJson, attributesJson)
+                        .map(HierarchyDocument.V2Group.apply)
+                    case None =>
+                      V2Metadata
+                        .parseArray(primaryJson, attributesJson)
+                        .map(HierarchyDocument.V2Array.apply)
+                  document.map(node.path -> _))
+
+  private def readRequiredMetadata(
+      store: AsyncObjectReader,
+      key: StoreKey,
+      limit: ByteCount
+  )(using ExecutionContext): Future[Either[ZarrError, String]] =
+    store
+      .readAll(key, limit)
+      .map:
+        case Left(error)  => Left(ZarrError.StoreFailure(error))
+        case Right(bytes) => Right(new String(bytes.values, "UTF-8"))
 
   private def readOptional(
       store: AsyncObjectReader,

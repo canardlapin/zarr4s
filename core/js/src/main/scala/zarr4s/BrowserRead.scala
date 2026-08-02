@@ -22,9 +22,10 @@ object BrowserZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: AsyncCodecRuntime = BrowserCodecRuntime.portable,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[AsyncObjectLister] = None
   )(using ExecutionContext): Future[Either[ZarrError, BrowserOpenedArray]] =
-    AsyncZarr.openArray(store, path, capabilities, limits, runtime, consolidation)
+    AsyncZarr.openArray(store, path, capabilities, limits, runtime, consolidation, lister)
 
   def openGroup(
       store: AsyncObjectReader,
@@ -32,9 +33,10 @@ object BrowserZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: AsyncCodecRuntime = BrowserCodecRuntime.portable,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[AsyncObjectLister] = None
   )(using ExecutionContext): Future[Either[ZarrError, BrowserOpenedGroup]] =
-    AsyncZarr.openGroup(store, path, capabilities, limits, runtime, consolidation)
+    AsyncZarr.openGroup(store, path, capabilities, limits, runtime, consolidation, lister)
 
   def openNode(
       store: AsyncObjectReader,
@@ -42,6 +44,7 @@ object BrowserZarr:
       capabilities: ZarrCapabilities = ZarrCapabilities(),
       limits: OpenLimits = OpenLimits(),
       runtime: AsyncCodecRuntime = BrowserCodecRuntime.portable,
-      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer,
+      lister: Option[AsyncObjectLister] = None
   )(using ExecutionContext): Future[Either[ZarrError, BrowserOpenedNode]] =
-    AsyncZarr.openNode(store, path, capabilities, limits, runtime, consolidation)
+    AsyncZarr.openNode(store, path, capabilities, limits, runtime, consolidation, lister)
