@@ -55,6 +55,27 @@ class V2MetadataSuite extends munit.FunSuite:
       Some(Some(Endianness.Big))
     )
 
+  test("v2 float16 and complex dtypes lower into the shared fixed-width carriers"):
+    val half = cOrder
+      .replace("<i2", "<f2")
+      .replace("\"fill_value\":-1", "\"fill_value\":\"0x3c00\"")
+    assertEquals(descriptor(metadata(half)).dataType.name, "float16")
+    assertEquals(descriptor(metadata(half)).fillValue, StoredScalar.FloatingBits("0x3c00"))
+
+    val complex = cOrder
+      .replace("<i2", ">c8")
+      .replace("\"fill_value\":-1", "\"fill_value\":[1,2]")
+    val found = descriptor(metadata(complex))
+    assertEquals(found.dataType.name, "complex64")
+    assertEquals(
+      found.fillValue,
+      StoredScalar.Complex(StoredFloating.Value(1.0), StoredFloating.Value(2.0))
+    )
+    assertEquals(
+      codecs(found).collectFirst { case value: BytesCodec => value.endianness },
+      Some(Some(Endianness.Big))
+    )
+
   test("v2 scalar and rank-five metadata use the same lowering"):
     val scalar = cOrder
       .replace("[2,3]", "[]")

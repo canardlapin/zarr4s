@@ -60,6 +60,115 @@ object OwnedDoubles:
     new OwnedDoubles(java.util.Arrays.copyOf(values, values.length))
   private[zarr4s] def unsafe(values: Array[Double]): OwnedDoubles = new OwnedDoubles(values)
 
+/** Interleaved real/imaginary primitive storage for complex64 values. */
+final class OwnedComplex64 private (private[zarr4s] val values: Array[Float]):
+  val length: Int = values.length / 2
+
+  def real(index: Int): Float = values(index * 2)
+  def imaginary(index: Int): Float = values(index * 2 + 1)
+  def toInterleavedArray: Array[Float] = java.util.Arrays.copyOf(values, values.length)
+
+object OwnedComplex64:
+  def fromInterleaved(values: Array[Float]): Either[ZarrError, OwnedComplex64] =
+    if values.length % 2 != 0 then
+      Left(ZarrError.InvalidSelection("complex64 storage must contain pairs of components"))
+    else Right(copyOfInterleaved(values))
+
+  private[zarr4s] def copyOfInterleaved(values: Array[Float]): OwnedComplex64 =
+    new OwnedComplex64(java.util.Arrays.copyOf(values, values.length))
+
+  private[zarr4s] def unsafe(values: Array[Float]): OwnedComplex64 = new OwnedComplex64(values)
+
+  private[zarr4s] def filledBits(size: Int, realBits: Int, imaginaryBits: Int): OwnedComplex64 =
+    val values = new Array[Float](size * 2)
+    val real = java.lang.Float.intBitsToFloat(realBits)
+    val imaginary = java.lang.Float.intBitsToFloat(imaginaryBits)
+    var index = 0
+    while index < size do
+      values(index * 2) = real
+      values(index * 2 + 1) = imaginary
+      index += 1
+    new OwnedComplex64(values)
+
+/** Interleaved real/imaginary primitive storage for complex128 values. */
+final class OwnedComplex128 private (private[zarr4s] val values: Array[Double]):
+  val length: Int = values.length / 2
+
+  def real(index: Int): Double = values(index * 2)
+  def imaginary(index: Int): Double = values(index * 2 + 1)
+  def toInterleavedArray: Array[Double] = java.util.Arrays.copyOf(values, values.length)
+
+object OwnedComplex128:
+  def fromInterleaved(values: Array[Double]): Either[ZarrError, OwnedComplex128] =
+    if values.length % 2 != 0 then
+      Left(ZarrError.InvalidSelection("complex128 storage must contain pairs of components"))
+    else Right(copyOfInterleaved(values))
+
+  private[zarr4s] def copyOfInterleaved(values: Array[Double]): OwnedComplex128 =
+    new OwnedComplex128(java.util.Arrays.copyOf(values, values.length))
+
+  private[zarr4s] def unsafe(values: Array[Double]): OwnedComplex128 = new OwnedComplex128(values)
+
+  private[zarr4s] def filledBits(size: Int, realBits: Long, imaginaryBits: Long): OwnedComplex128 =
+    val values = new Array[Double](size * 2)
+    val real = java.lang.Double.longBitsToDouble(realBits)
+    val imaginary = java.lang.Double.longBitsToDouble(imaginaryBits)
+    var index = 0
+    while index < size do
+      values(index * 2) = real
+      values(index * 2 + 1) = imaginary
+      index += 1
+    new OwnedComplex128(values)
+
+/** Exact IEEE 754 binary16 conversion shared by JVM and Scala.js. */
+object HalfFloat:
+  def toBits(value: Float): Int =
+    val bits = java.lang.Float.floatToRawIntBits(value)
+    val sign = (bits >>> 16) & 0x8000
+    val exponent = (bits >>> 23) & 0xff
+    val mantissa = bits & 0x7fffff
+    if exponent == 0xff then
+      if mantissa == 0 then sign | 0x7c00
+      else sign | 0x7e00 | ((mantissa >>> 13) & 0x03ff)
+    else
+      val halfExponent = exponent - 127 + 15
+      if halfExponent >= 0x1f then sign | 0x7c00
+      else if halfExponent <= 0 then
+        if halfExponent < -10 then sign
+        else
+          val normalized = mantissa | 0x800000
+          val shift = 14 - halfExponent
+          var result = normalized >>> shift
+          val remainder = normalized & ((1 << shift) - 1)
+          val halfway = 1 << (shift - 1)
+          if remainder > halfway || (remainder == halfway && (result & 1) != 0) then result += 1
+          sign | result
+      else
+        var result = (halfExponent << 10) | (mantissa >>> 13)
+        val remainder = mantissa & 0x1fff
+        if remainder > 0x1000 || (remainder == 0x1000 && (result & 1) != 0) then
+          result += 1
+          if (result & 0x7c00) == 0x7c00 then result = sign | 0x7c00
+        sign | (result & 0x7fff)
+
+  def fromBits(bits: Int): Float =
+    val sign = (bits & 0x8000) << 16
+    val exponent = (bits >>> 10) & 0x1f
+    val mantissa = bits & 0x03ff
+    val result =
+      if exponent == 0 then
+        if mantissa == 0 then sign
+        else
+          var normalized = mantissa
+          var exponentValue = -14
+          while (normalized & 0x0400) == 0 do
+            normalized <<= 1
+            exponentValue -= 1
+          sign | ((exponentValue + 127) << 23) | ((normalized & 0x03ff) << 13)
+      else if exponent == 0x1f then sign | 0x7f800000 | (mantissa << 13)
+      else sign | ((exponent - 15 + 127) << 23) | (mantissa << 13)
+    java.lang.Float.intBitsToFloat(result)
+
 /** The primitive carrier used by an executable fixed-width data type.
   *
   * Signed and unsigned values deliberately share the same primitive arrays: unsigned interpretation
@@ -78,20 +187,30 @@ enum ScalarKind(val byteWidth: Int):
   case Unsigned64 extends ScalarKind(8)
   case Float32 extends ScalarKind(4)
   case Float64 extends ScalarKind(8)
+  case Float16 extends ScalarKind(2)
+  case Complex64 extends ScalarKind(8)
+  case Complex128 extends ScalarKind(16)
+  case Raw private[zarr4s] (width: Int) extends ScalarKind(width)
 
   def accepts(block: PrimitiveBlock): Boolean = (this, block) match
-    case (Bool, PrimitiveBlock.Bool(_))         => true
-    case (Signed8, PrimitiveBlock.Int8(_))      => true
-    case (Unsigned8, PrimitiveBlock.UInt8(_))   => true
-    case (Signed16, PrimitiveBlock.Int16(_))    => true
-    case (Unsigned16, PrimitiveBlock.UInt16(_)) => true
-    case (Signed32, PrimitiveBlock.Int32(_))    => true
-    case (Unsigned32, PrimitiveBlock.UInt32(_)) => true
-    case (Signed64, PrimitiveBlock.Int64(_))    => true
-    case (Unsigned64, PrimitiveBlock.UInt64(_)) => true
-    case (Float32, PrimitiveBlock.Float32(_))   => true
-    case (Float64, PrimitiveBlock.Float64(_))   => true
-    case _                                      => false
+    case (Bool, PrimitiveBlock.Bool(_))             => true
+    case (Signed8, PrimitiveBlock.Int8(_))          => true
+    case (Unsigned8, PrimitiveBlock.UInt8(_))       => true
+    case (Signed16, PrimitiveBlock.Int16(_))        => true
+    case (Unsigned16, PrimitiveBlock.UInt16(_))     => true
+    case (Signed32, PrimitiveBlock.Int32(_))        => true
+    case (Unsigned32, PrimitiveBlock.UInt32(_))     => true
+    case (Signed64, PrimitiveBlock.Int64(_))        => true
+    case (Unsigned64, PrimitiveBlock.UInt64(_))     => true
+    case (Float16, PrimitiveBlock.Float16(_))       => true
+    case (Float32, PrimitiveBlock.Float32(_))       => true
+    case (Float64, PrimitiveBlock.Float64(_))       => true
+    case (Complex64, PrimitiveBlock.Complex64(_))   => true
+    case (Complex128, PrimitiveBlock.Complex128(_)) => true
+    case (Raw(width), PrimitiveBlock.Raw(values, elementWidth))
+        if width > 0 && width == elementWidth && values.length % elementWidth == 0 =>
+      true
+    case _ => false
 
   private[zarr4s] def allocate(
       fill: StoredScalar,
@@ -157,6 +276,49 @@ enum ScalarKind(val byteWidth: Int):
           PrimitiveBlock.Float64(
             OwnedDoubles.unsafe(Array.fill(size)(java.lang.Double.longBitsToDouble(bits)))
           )
+    case Float16 =>
+      ScalarFill
+        .floating(fill, 4)
+        .map: bits =>
+          PrimitiveBlock.Float16(OwnedShorts.unsafe(Array.fill(size)(bits.toShort)))
+    case Complex64 =>
+      if size > Int.MaxValue / 2 then
+        Left(ZarrError.ResourceLimit("complex64 fill allocation", Int.MaxValue, size.toLong * 2L))
+      else
+        ScalarFill
+          .complex(fill, 8, dataTypeName)
+          .map: (realBits, imaginaryBits) =>
+            PrimitiveBlock.Complex64(
+              OwnedComplex64.filledBits(size, realBits.toInt, imaginaryBits.toInt)
+            )
+    case Complex128 =>
+      if size > Int.MaxValue / 2 then
+        Left(ZarrError.ResourceLimit("complex128 fill allocation", Int.MaxValue, size.toLong * 2L))
+      else
+        ScalarFill
+          .complex(fill, 16, dataTypeName)
+          .map: (realBits, imaginaryBits) =>
+            PrimitiveBlock.Complex128(
+              OwnedComplex128.filledBits(size, realBits, imaginaryBits)
+            )
+    case Raw(width) =>
+      ScalarFill
+        .raw(fill, width, dataTypeName)
+        .flatMap: values =>
+          if size != 0 && width > Int.MaxValue / size then
+            Left(ZarrError.ResourceLimit("raw fill allocation", Int.MaxValue, size.toLong * width))
+          else
+            val bytes = new Array[Byte](size * width)
+            var index = 0
+            while index < size do
+              Array.copy(values, 0, bytes, index * width, width)
+              index += 1
+            Right(PrimitiveBlock.Raw(OwnedBytes.unsafe(bytes), width))
+
+object ScalarKind:
+  def raw(width: Int): Either[ZarrError, ScalarKind] =
+    if width > 0 then Right(Raw(width))
+    else Left(ZarrError.InvalidSelection(s"raw element width must be positive, found $width"))
 
 enum PrimitiveBlock:
   case Bool(values: OwnedBooleans)
@@ -168,21 +330,29 @@ enum PrimitiveBlock:
   case UInt32(values: OwnedInts)
   case Int64(values: OwnedLongs)
   case UInt64(values: OwnedLongs)
+  case Float16(values: OwnedShorts)
   case Float32(values: OwnedFloats)
   case Float64(values: OwnedDoubles)
+  case Complex64(values: OwnedComplex64)
+  case Complex128(values: OwnedComplex128)
+  case Raw private[zarr4s] (values: OwnedBytes, elementWidth: Int)
 
   def elementCount: Int = this match
-    case Bool(values)    => values.length
-    case Int8(values)    => values.length
-    case UInt8(values)   => values.length
-    case Int16(values)   => values.length
-    case UInt16(values)  => values.length
-    case Int32(values)   => values.length
-    case UInt32(values)  => values.length
-    case Int64(values)   => values.length
-    case UInt64(values)  => values.length
-    case Float32(values) => values.length
-    case Float64(values) => values.length
+    case Bool(values)              => values.length
+    case Int8(values)              => values.length
+    case UInt8(values)             => values.length
+    case Int16(values)             => values.length
+    case UInt16(values)            => values.length
+    case Int32(values)             => values.length
+    case UInt32(values)            => values.length
+    case Int64(values)             => values.length
+    case UInt64(values)            => values.length
+    case Float16(values)           => values.length
+    case Float32(values)           => values.length
+    case Float64(values)           => values.length
+    case Complex64(values)         => values.length
+    case Complex128(values)        => values.length
+    case Raw(values, elementWidth) => values.length / elementWidth
 
   private[zarr4s] def copyElementFrom(
       source: PrimitiveBlock,
@@ -216,26 +386,53 @@ enum PrimitiveBlock:
     case (UInt64(target), UInt64(found)) =>
       target.values(destinationIndex) = found(sourceIndex)
       Right(())
+    case (Float16(target), Float16(found)) =>
+      target.values(destinationIndex) = found(sourceIndex)
+      Right(())
     case (Float32(target), Float32(found)) =>
       target.values(destinationIndex) = found(sourceIndex)
       Right(())
     case (Float64(target), Float64(found)) =>
       target.values(destinationIndex) = found(sourceIndex)
       Right(())
+    case (Complex64(target), Complex64(found)) =>
+      target.values(destinationIndex * 2) = found.values(sourceIndex * 2)
+      target.values(destinationIndex * 2 + 1) = found.values(sourceIndex * 2 + 1)
+      Right(())
+    case (Complex128(target), Complex128(found)) =>
+      target.values(destinationIndex * 2) = found.values(sourceIndex * 2)
+      target.values(destinationIndex * 2 + 1) = found.values(sourceIndex * 2 + 1)
+      Right(())
+    case (Raw(target, targetWidth), Raw(found, sourceWidth)) if targetWidth == sourceWidth =>
+      Array.copy(
+        found.values,
+        sourceIndex * sourceWidth,
+        target.values,
+        destinationIndex * targetWidth,
+        targetWidth
+      )
+      Right(())
     case _ => Left(ZarrError.InvalidSelection("primitive block dtype mismatch"))
 
   private[zarr4s] def reordered(sourceIndices: Array[Int]): PrimitiveBlock = this match
-    case Bool(values)    => Bool(OwnedBooleans.unsafe(reorder(values.values, sourceIndices)))
-    case Int8(values)    => Int8(OwnedBytes.unsafe(reorder(values.values, sourceIndices)))
-    case UInt8(values)   => UInt8(OwnedBytes.unsafe(reorder(values.values, sourceIndices)))
-    case Int16(values)   => Int16(OwnedShorts.unsafe(reorder(values.values, sourceIndices)))
-    case UInt16(values)  => UInt16(OwnedShorts.unsafe(reorder(values.values, sourceIndices)))
-    case Int32(values)   => Int32(OwnedInts.unsafe(reorder(values.values, sourceIndices)))
-    case UInt32(values)  => UInt32(OwnedInts.unsafe(reorder(values.values, sourceIndices)))
-    case Int64(values)   => Int64(OwnedLongs.unsafe(reorder(values.values, sourceIndices)))
-    case UInt64(values)  => UInt64(OwnedLongs.unsafe(reorder(values.values, sourceIndices)))
-    case Float32(values) => Float32(OwnedFloats.unsafe(reorder(values.values, sourceIndices)))
-    case Float64(values) => Float64(OwnedDoubles.unsafe(reorder(values.values, sourceIndices)))
+    case Bool(values)      => Bool(OwnedBooleans.unsafe(reorder(values.values, sourceIndices)))
+    case Int8(values)      => Int8(OwnedBytes.unsafe(reorder(values.values, sourceIndices)))
+    case UInt8(values)     => UInt8(OwnedBytes.unsafe(reorder(values.values, sourceIndices)))
+    case Int16(values)     => Int16(OwnedShorts.unsafe(reorder(values.values, sourceIndices)))
+    case UInt16(values)    => UInt16(OwnedShorts.unsafe(reorder(values.values, sourceIndices)))
+    case Int32(values)     => Int32(OwnedInts.unsafe(reorder(values.values, sourceIndices)))
+    case UInt32(values)    => UInt32(OwnedInts.unsafe(reorder(values.values, sourceIndices)))
+    case Int64(values)     => Int64(OwnedLongs.unsafe(reorder(values.values, sourceIndices)))
+    case UInt64(values)    => UInt64(OwnedLongs.unsafe(reorder(values.values, sourceIndices)))
+    case Float16(values)   => Float16(OwnedShorts.unsafe(reorder(values.values, sourceIndices)))
+    case Float32(values)   => Float32(OwnedFloats.unsafe(reorder(values.values, sourceIndices)))
+    case Float64(values)   => Float64(OwnedDoubles.unsafe(reorder(values.values, sourceIndices)))
+    case Complex64(values) =>
+      Complex64(OwnedComplex64.unsafe(reorderPairs(values.values, sourceIndices)))
+    case Complex128(values) =>
+      Complex128(OwnedComplex128.unsafe(reorderPairs(values.values, sourceIndices)))
+    case Raw(values, elementWidth) =>
+      Raw(OwnedBytes.unsafe(reorderBytes(values.values, elementWidth, sourceIndices)), elementWidth)
 
   private def reorder[A: reflect.ClassTag](values: Array[A], sourceIndices: Array[Int]): Array[A] =
     val result = new Array[A](sourceIndices.length)
@@ -244,6 +441,49 @@ enum PrimitiveBlock:
       result(index) = values(sourceIndices(index))
       index += 1
     result
+
+  private def reorderPairs[A: reflect.ClassTag](
+      values: Array[A],
+      sourceIndices: Array[Int]
+  ): Array[A] =
+    val result = new Array[A](sourceIndices.length * 2)
+    var index = 0
+    while index < sourceIndices.length do
+      val source = sourceIndices(index) * 2
+      result(index * 2) = values(source)
+      result(index * 2 + 1) = values(source + 1)
+      index += 1
+    result
+
+  private def reorderBytes(
+      values: Array[Byte],
+      elementWidth: Int,
+      sourceIndices: Array[Int]
+  ): Array[Byte] =
+    val result = new Array[Byte](sourceIndices.length * elementWidth)
+    var index = 0
+    while index < sourceIndices.length do
+      Array.copy(
+        values,
+        sourceIndices(index) * elementWidth,
+        result,
+        index * elementWidth,
+        elementWidth
+      )
+      index += 1
+    result
+
+object PrimitiveBlock:
+  def raw(values: OwnedBytes, elementWidth: Int): Either[ZarrError, PrimitiveBlock] =
+    if elementWidth <= 0 then
+      Left(ZarrError.InvalidSelection(s"raw element width must be positive, found $elementWidth"))
+    else if values.length % elementWidth != 0 then
+      Left(
+        ZarrError.InvalidSelection(
+          s"raw byte length ${values.length} is not divisible by element width $elementWidth"
+        )
+      )
+    else Right(PrimitiveBlock.Raw(values, elementWidth))
 
 private object ScalarFill:
   def boolean(fill: StoredScalar, name: String): Either[ZarrError, Boolean] = fill match
@@ -263,11 +503,64 @@ private object ScalarFill:
 
   def floating(fill: StoredScalar, hexDigits: Int): Either[ZarrError, Long] = fill match
     case StoredScalar.Floating(value) =>
-      if hexDigits == 8 then Right(java.lang.Float.floatToRawIntBits(value.toFloat).toLong)
+      if hexDigits == 4 then Right(HalfFloat.toBits(value.toFloat).toLong)
+      else if hexDigits == 8 then Right(java.lang.Float.floatToRawIntBits(value.toFloat).toLong)
       else Right(java.lang.Double.doubleToRawLongBits(value))
     case StoredScalar.FloatingBits(hex) => Right(parseHexBits(hex.drop(2)))
     case _                              =>
       Left(ZarrError.InvalidMetadata("$.fill_value", "floating dtype requires floating fill"))
+
+  def complex(
+      fill: StoredScalar,
+      hexDigits: Int,
+      name: String
+  ): Either[ZarrError, (Long, Long)] = fill match
+    case StoredScalar.Complex(real, imaginary) =>
+      for
+        realBits <- floatingComponent(real, hexDigits, name)
+        imaginaryBits <- floatingComponent(imaginary, hexDigits, name)
+      yield (realBits, imaginaryBits)
+    case _ =>
+      Left(ZarrError.InvalidMetadata("$.fill_value", s"$name requires a two-component fill"))
+
+  def raw(fill: StoredScalar, width: Int, name: String): Either[ZarrError, Array[Byte]] = fill match
+    case StoredScalar.RawBytes(values) =>
+      if values.length != width then
+        Left(
+          ZarrError.InvalidMetadata(
+            "$.fill_value",
+            s"$name requires exactly $width raw bytes, found ${values.length}"
+          )
+        )
+      else
+        val result = new Array[Byte](values.length)
+        var index = 0
+        while index < values.length do
+          val value = values(index)
+          if value < 0 || value > 255 then
+            return Left(
+              ZarrError.InvalidMetadata(
+                "$.fill_value",
+                s"$name fill byte $value is outside the range [0, 255]"
+              )
+            )
+          result(index) = value.toByte
+          index += 1
+        Right(result)
+    case _ => Left(ZarrError.InvalidMetadata("$.fill_value", s"$name requires a byte array fill"))
+
+  private def floatingComponent(
+      value: StoredFloating,
+      hexDigits: Int,
+      name: String
+  ): Either[ZarrError, Long] = value match
+    case StoredFloating.Value(found) =>
+      if hexDigits == 8 then Right(java.lang.Float.floatToRawIntBits(found.toFloat).toLong)
+      else Right(java.lang.Double.doubleToRawLongBits(found))
+    case StoredFloating.Bits(hex) =>
+      if hex.length == hexDigits + 2 && hex.startsWith("0x") then Right(parseHexBits(hex.drop(2)))
+      else
+        Left(ZarrError.InvalidMetadata("$.fill_value", s"invalid $name floating component '$hex'"))
 
   private def parseHexBits(hex: String): Long =
     var result = 0L
@@ -311,10 +604,20 @@ object ScalarBytes:
                 Right(PrimitiveBlock.Int64(decodeLongs(bytes.values, count, order)))
               case ScalarKind.Unsigned64 =>
                 Right(PrimitiveBlock.UInt64(decodeLongs(bytes.values, count, order)))
+              case ScalarKind.Float16 =>
+                Right(PrimitiveBlock.Float16(decodeShorts(bytes.values, count, order)))
               case ScalarKind.Float32 =>
                 Right(PrimitiveBlock.Float32(decodeFloats(bytes.values, count, order)))
               case ScalarKind.Float64 =>
                 Right(PrimitiveBlock.Float64(decodeDoubles(bytes.values, count, order)))
+              case ScalarKind.Complex64 =>
+                componentCount(count, 2).map: components =>
+                  PrimitiveBlock.Complex64(decodeComplex64(bytes.values, components, order))
+              case ScalarKind.Complex128 =>
+                componentCount(count, 2).map: components =>
+                  PrimitiveBlock.Complex128(decodeComplex128(bytes.values, components, order))
+              case ScalarKind.Raw(width) =>
+                Right(PrimitiveBlock.Raw(OwnedBytes.copyOf(bytes.values), width))
 
   def encode(
       block: PrimitiveBlock,
@@ -325,17 +628,21 @@ object ScalarBytes:
     else
       val order = byteOrder(endianness)
       block match
-        case PrimitiveBlock.Bool(values)    => Right(encodeBooleans(values.values))
-        case PrimitiveBlock.Int8(values)    => Right(OwnedBytes.copyOf(values.values))
-        case PrimitiveBlock.UInt8(values)   => Right(OwnedBytes.copyOf(values.values))
-        case PrimitiveBlock.Int16(values)   => Right(encodeShorts(values.values, order))
-        case PrimitiveBlock.UInt16(values)  => Right(encodeShorts(values.values, order))
-        case PrimitiveBlock.Int32(values)   => Right(encodeInts(values.values, order))
-        case PrimitiveBlock.UInt32(values)  => Right(encodeInts(values.values, order))
-        case PrimitiveBlock.Int64(values)   => Right(encodeLongs(values.values, order))
-        case PrimitiveBlock.UInt64(values)  => Right(encodeLongs(values.values, order))
-        case PrimitiveBlock.Float32(values) => Right(encodeFloats(values.values, order))
-        case PrimitiveBlock.Float64(values) => Right(encodeDoubles(values.values, order))
+        case PrimitiveBlock.Bool(values)       => Right(encodeBooleans(values.values))
+        case PrimitiveBlock.Int8(values)       => Right(OwnedBytes.copyOf(values.values))
+        case PrimitiveBlock.UInt8(values)      => Right(OwnedBytes.copyOf(values.values))
+        case PrimitiveBlock.Int16(values)      => Right(encodeShorts(values.values, order))
+        case PrimitiveBlock.UInt16(values)     => Right(encodeShorts(values.values, order))
+        case PrimitiveBlock.Int32(values)      => Right(encodeInts(values.values, order))
+        case PrimitiveBlock.UInt32(values)     => Right(encodeInts(values.values, order))
+        case PrimitiveBlock.Int64(values)      => Right(encodeLongs(values.values, order))
+        case PrimitiveBlock.UInt64(values)     => Right(encodeLongs(values.values, order))
+        case PrimitiveBlock.Float16(values)    => Right(encodeShorts(values.values, order))
+        case PrimitiveBlock.Float32(values)    => Right(encodeFloats(values.values, order))
+        case PrimitiveBlock.Float64(values)    => Right(encodeDoubles(values.values, order))
+        case PrimitiveBlock.Complex64(values)  => Right(encodeFloats(values.values, order))
+        case PrimitiveBlock.Complex128(values) => Right(encodeDoubles(values.values, order))
+        case PrimitiveBlock.Raw(values, _)     => Right(OwnedBytes.copyOf(values.values))
 
   private def expectedBytes(
       dataType: DataTypeCapability,
@@ -353,6 +660,11 @@ object ScalarBytes:
 
   private def byteOrder(endianness: Option[Endianness]): Endianness =
     endianness.getOrElse(Endianness.Little)
+
+  private def componentCount(count: Int, multiplier: Int): Either[CodecError, Int] =
+    if count > Int.MaxValue / multiplier then
+      Left(CodecError.DecodedLimitExceeded(Int.MaxValue, count.toLong * multiplier))
+    else Right(count * multiplier)
 
   private def decodeBooleans(bytes: Array[Byte]): Either[CodecError, OwnedBooleans] =
     val values = new Array[Boolean](bytes.length)
@@ -407,6 +719,18 @@ object ScalarBytes:
       values(index) = java.lang.Double.longBitsToDouble(read64(bytes, index * 8, order))
       index += 1
     OwnedDoubles.unsafe(values)
+
+  private def decodeComplex64(
+      bytes: Array[Byte],
+      componentCount: Int,
+      order: Endianness
+  ): OwnedComplex64 = OwnedComplex64.unsafe(decodeFloats(bytes, componentCount, order).values)
+
+  private def decodeComplex128(
+      bytes: Array[Byte],
+      componentCount: Int,
+      order: Endianness
+  ): OwnedComplex128 = OwnedComplex128.unsafe(decodeDoubles(bytes, componentCount, order).values)
 
   private def encodeBooleans(values: Array[Boolean]): OwnedBytes =
     val bytes = new Array[Byte](values.length)

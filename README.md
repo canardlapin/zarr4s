@@ -35,7 +35,8 @@ arrays and groups into the same descriptor; explicit hierarchy navigation;
 bounded v2 `.zmetadata` and v3 inline consolidated indexes; runtime ranks
 including zero; regular chunk grids; default and v2-compatible chunk keys;
 Boolean values; every signed and unsigned integer width from 8 through 64 bits;
-float32; float64; C and Fortran order through normative transpose;
+float16; float32; float64; complex64; complex128; bounded raw-width `rN`
+carriers; C and Fortran order through normative transpose;
 little/big-endian byte encoding; the common Zarr v2 shuffle filter; chunk-local gzip and
 Zarr v2 zlib; CRC32C; and start/end
 `sharding_indexed` reads and writes. Shared code provides deterministic
@@ -135,10 +136,9 @@ the normative v3 specification.
 
 It intentionally does not own scientific-domain profiles, mutation, v2
 writing, S3 credentials, persistent caches, prefetch or retention policy,
-Blosc itself, or every extension. Float16, complex, raw-width,
-variable-length, structured values, v2 object arrays, and v2 filters beyond
-shuffle are not yet claimed. Unsupported metadata crosses a typed error
-boundary instead of being guessed at.
+Blosc itself, or every extension. Variable-length, structured values, v2
+object arrays, and v2 filters beyond shuffle are not yet claimed. Unsupported
+metadata crosses a typed error boundary instead of being guessed at.
 
 The core has no production library dependency. Its runtime-rank values,
 immutable descriptors, pure planners, explicit codec and store capabilities,

@@ -55,6 +55,15 @@ class WriterSuite extends munit.FunSuite:
         assertEquals(left.toArray.toVector, right.toArray.toVector)
       case (PrimitiveBlock.Float64(left), PrimitiveBlock.Float64(right)) =>
         assertEquals(left.toArray.toVector, right.toArray.toVector)
+      case (PrimitiveBlock.Float16(left), PrimitiveBlock.Float16(right)) =>
+        assertEquals(left.toArray.toVector, right.toArray.toVector)
+      case (PrimitiveBlock.Complex64(left), PrimitiveBlock.Complex64(right)) =>
+        assertEquals(left.toInterleavedArray.toVector, right.toInterleavedArray.toVector)
+      case (PrimitiveBlock.Complex128(left), PrimitiveBlock.Complex128(right)) =>
+        assertEquals(left.toInterleavedArray.toVector, right.toInterleavedArray.toVector)
+      case (PrimitiveBlock.Raw(left, leftWidth), PrimitiveBlock.Raw(right, rightWidth)) =>
+        assertEquals(leftWidth, rightWidth)
+        assertEquals(left.toArray.toVector, right.toArray.toVector)
       case _ => fail(s"block type mismatch: $actual versus $expected")
 
   test("portable SHA-256 and group creation are deterministic"):
@@ -108,12 +117,39 @@ class WriterSuite extends munit.FunSuite:
         "0.0",
         PrimitiveBlock.Float32(OwnedFloats.copyOf(Array(-1.5f, 0.0f, 2.25f, 9.0f)))
       ),
-      ("float64", "0.0", PrimitiveBlock.Float64(OwnedDoubles.copyOf(Array(-1.5, 0.0, 2.25, 9.0))))
+      ("float64", "0.0", PrimitiveBlock.Float64(OwnedDoubles.copyOf(Array(-1.5, 0.0, 2.25, 9.0)))),
+      (
+        "float16",
+        "\"0x0000\"",
+        PrimitiveBlock.Float16(OwnedShorts.copyOf(Array[Short](0x3c00, 0, 0x4100, 0x4800)))
+      ),
+      (
+        "complex64",
+        "[0.0,0.0]",
+        PrimitiveBlock.Complex64(
+          OwnedComplex64.copyOfInterleaved(Array(1.5f, -2.0f, 0.0f, 0.5f, 2.25f, 1.0f, 9.0f, -3.0f))
+        )
+      ),
+      (
+        "complex128",
+        "[0.0,0.0]",
+        PrimitiveBlock.Complex128(
+          OwnedComplex128.copyOfInterleaved(Array(1.5, -2.0, 0.0, 0.5, 2.25, 1.0, 9.0, -3.0))
+        )
+      ),
+      (
+        "r24",
+        "[0,0,0]",
+        PrimitiveBlock.Raw(
+          OwnedBytes.copyOf(Array[Byte](1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)),
+          3
+        )
+      )
     )
     val store = zvalue(MemoryStore(Map.empty))
     carriers.foreach: (name, fill, block) =>
       val endian =
-        if name == "bool" || name.endsWith("8") then ""
+        if Set("bool", "int8", "uint8").contains(name) || name.startsWith("r") then ""
         else "\"configuration\":{\"endian\":\"big\"},"
       val found = descriptor(
         s"""{"zarr_format":3,"node_type":"array","shape":[2,2],"data_type":"$name","chunk_grid":{"name":"regular","configuration":{"chunk_shape":[2,2]}},"chunk_key_encoding":{"name":"v2"},"fill_value":$fill,"codecs":[{${endian}"name":"bytes"}],"attributes":{},"storage_transformers":[]}"""

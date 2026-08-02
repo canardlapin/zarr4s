@@ -122,14 +122,28 @@ object ZarrMetadataRenderer:
     case StoredScalar.Integral(value)         => number(value)
     case StoredScalar.UnsignedIntegral(value) =>
       JsonValue.Num(JsonNumber.unsafe(value.toString))
-    case StoredScalar.Floating(value) if value.isNaN                      => JsonValue.Str("NaN")
-    case StoredScalar.Floating(value) if value == Double.PositiveInfinity =>
+    case value: StoredScalar.Floating          => floatingValue(value)
+    case StoredScalar.FloatingBits(hex)        => JsonValue.Str(hex)
+    case StoredScalar.Complex(real, imaginary) =>
+      JsonValue.Arr(Vector(floatingComponent(real), floatingComponent(imaginary)))
+    case StoredScalar.RawBytes(values) =>
+      JsonValue.Arr(values.map(value => number(value.toLong)))
+
+  private def floatingValue(value: StoredScalar.Floating): JsonValue =
+    if value.value.isNaN then JsonValue.Str("NaN")
+    else if value.value == Double.PositiveInfinity then JsonValue.Str("Infinity")
+    else if value.value == Double.NegativeInfinity then JsonValue.Str("-Infinity")
+    else JsonValue.Num(JsonNumber.unsafe(java.lang.Double.toString(value.value)))
+
+  private def floatingComponent(value: StoredFloating): JsonValue = value match
+    case StoredFloating.Value(found) if found.isNaN                      => JsonValue.Str("NaN")
+    case StoredFloating.Value(found) if found == Double.PositiveInfinity =>
       JsonValue.Str("Infinity")
-    case StoredScalar.Floating(value) if value == Double.NegativeInfinity =>
+    case StoredFloating.Value(found) if found == Double.NegativeInfinity =>
       JsonValue.Str("-Infinity")
-    case StoredScalar.Floating(value) =>
-      JsonValue.Num(JsonNumber.unsafe(java.lang.Double.toString(value)))
-    case StoredScalar.FloatingBits(hex) => JsonValue.Str(hex)
+    case StoredFloating.Value(found) =>
+      JsonValue.Num(JsonNumber.unsafe(java.lang.Double.toString(found)))
+    case StoredFloating.Bits(hex) => JsonValue.Str(hex)
 
   private def longArray(values: Vector[Long]): JsonValue =
     JsonValue.Arr(values.map(number))

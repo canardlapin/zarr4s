@@ -32,6 +32,12 @@ enum StoredScalar:
   case UnsignedIntegral(value: BigInt)
   case Floating(value: Double)
   case FloatingBits(hex: String)
+  case Complex(real: StoredFloating, imaginary: StoredFloating)
+  case RawBytes(values: Vector[Int])
+
+enum StoredFloating:
+  case Value(value: Double)
+  case Bits(hex: String)
 
 trait DataTypeCapability:
   def name: String
@@ -53,8 +59,11 @@ object BuiltInDataTypes:
   val uint16: DataTypeCapability = UnsignedIntegerDataType("uint16", ScalarKind.Unsigned16, 16)
   val uint32: DataTypeCapability = UnsignedIntegerDataType("uint32", ScalarKind.Unsigned32, 32)
   val uint64: DataTypeCapability = UnsignedIntegerDataType("uint64", ScalarKind.Unsigned64, 64)
+  val float16: DataTypeCapability = FloatingDataType("float16", ScalarKind.Float16, 4)
   val float32: DataTypeCapability = FloatingDataType("float32", ScalarKind.Float32, 8)
   val float64: DataTypeCapability = FloatingDataType("float64", ScalarKind.Float64, 16)
+  val complex64: DataTypeCapability = ComplexDataType("complex64", ScalarKind.Complex64, 8)
+  val complex128: DataTypeCapability = ComplexDataType("complex128", ScalarKind.Complex128, 16)
 
   val all: Vector[DataTypeCapability] = Vector(
     bool,
@@ -66,9 +75,23 @@ object BuiltInDataTypes:
     uint16,
     uint32,
     uint64,
+    float16,
     float32,
-    float64
+    float64,
+    complex64,
+    complex128
   )
+
+  def raw(bits: Int): Option[DataTypeCapability] =
+    if bits > 0 && bits % 8 == 0 then
+      ScalarKind.raw(bits / 8) match
+        case Right(kind) => Some(RawDataType(s"r$bits", kind))
+        case Left(_)     => None
+    else None
+
+  private[zarr4s] def fromName(name: String): Option[DataTypeCapability] =
+    if name.startsWith("r") then name.drop(1).toIntOption.flatMap(raw)
+    else None
 
   private case object BooleanDataType extends DataTypeCapability:
     val name = "bool"
@@ -126,6 +149,58 @@ object BuiltInDataTypes:
       value.length == bitHexDigits + 2 &&
         value.startsWith("0x") &&
         value.drop(2).forall(character => Character.digit(character, 16) >= 0)
+
+  private final case class ComplexDataType(
+      name: String,
+      scalarKind: ScalarKind,
+      bitHexDigits: Int
+  ) extends DataTypeCapability:
+    def parseFill(value: JsonValue): Either[String, StoredScalar] = value match
+      case JsonValue.Arr(values) if values.length == 2 =>
+        for
+          real <- parseComponent(values(0))
+          imaginary <- parseComponent(values(1))
+        yield StoredScalar.Complex(real, imaginary)
+      case JsonValue.Arr(values) =>
+        Left(s"$name fill value must contain exactly two components, found ${values.length}")
+      case _ => Left(s"$name fill value must be a two-element array")
+
+    private def parseComponent(value: JsonValue): Either[String, StoredFloating] = value match
+      case JsonValue.Num(number)      => Right(StoredFloating.Value(number.toDouble))
+      case JsonValue.Str("NaN")       => Right(StoredFloating.Value(Double.NaN))
+      case JsonValue.Str("Infinity")  => Right(StoredFloating.Value(Double.PositiveInfinity))
+      case JsonValue.Str("-Infinity") => Right(StoredFloating.Value(Double.NegativeInfinity))
+      case JsonValue.Str(hex) if validBits(hex) => Right(StoredFloating.Bits(hex.toLowerCase))
+      case JsonValue.Str(found) => Left(s"unsupported $name floating fill value '$found'")
+      case _                    => Left(s"$name fill components must be floating values")
+
+    private def validBits(value: String): Boolean =
+      value.length == bitHexDigits + 2 &&
+        value.startsWith("0x") &&
+        value.drop(2).forall(character => Character.digit(character, 16) >= 0)
+
+  private final case class RawDataType(name: String, scalarKind: ScalarKind)
+      extends DataTypeCapability:
+    def parseFill(value: JsonValue): Either[String, StoredScalar] = value match
+      case JsonValue.Arr(values) if values.length == scalarKind.byteWidth =>
+        val result = Vector.newBuilder[Int]
+        var index = 0
+        while index < values.length do
+          values(index) match
+            case JsonValue.Num(number) =>
+              number.toLongExact match
+                case Right(found) if found >= 0L && found <= 255L => result += found.toInt
+                case Right(found)                                 =>
+                  return Left(s"$name fill byte $found is outside the range [0, 255]")
+                case Left(detail) => return Left(s"$name fill byte $detail")
+            case _ => return Left(s"$name fill bytes must be integers")
+          index += 1
+        Right(StoredScalar.RawBytes(result.result()))
+      case JsonValue.Arr(values) =>
+        Left(
+          s"$name fill value must contain exactly ${scalarKind.byteWidth} bytes, found ${values.length}"
+        )
+      case _ => Left(s"$name fill value must be an array of bytes")
 
 enum CodecRepresentation:
   case ArrayValues
@@ -223,7 +298,10 @@ object BuiltInCodecs:
           case Some("big")    => Right(Some(Endianness.Big))
           case Some(found)    => Left(s"bytes endian must be 'little' or 'big', found '$found'")
         endianness.flatMap: found =>
-          if dataType.byteWidth > 1 && found.isEmpty then
+          val endianRequired = dataType.scalarKind match
+            case ScalarKind.Raw(_) => false
+            case _                 => dataType.byteWidth > 1
+          if endianRequired && found.isEmpty then
             Left(s"bytes endian is required for multibyte data type ${dataType.name}")
           else Right(BytesCodec(found))
 
@@ -313,7 +391,8 @@ final case class ZarrCapabilities(
   private val dataTypeIndex = dataTypes.map(capability => capability.name -> capability).toMap
   private val codecIndex = codecs.map(capability => capability.name -> capability).toMap
 
-  def dataType(name: String): Option[DataTypeCapability] = dataTypeIndex.get(name)
+  def dataType(name: String): Option[DataTypeCapability] =
+    dataTypeIndex.get(name).orElse(BuiltInDataTypes.fromName(name))
   def codec(name: String): Option[CodecCapability] = codecIndex.get(name)
 
 enum PhysicalLayout:

@@ -4,11 +4,11 @@ This document is the working boundary for the `Complete common core Zarr
 support` epic. It records what zarr4s can claim, what the next slices must
 prove, and which features remain deliberately outside the generic kernel.
 
-The baseline is commit `4ff4532` on 2026-08-01. The matrix is intentionally
-implementation-specific: a feature is not admitted because a metadata parser
-recognises its name. It is admitted only after the relevant lowering,
-cross-platform execution, bounded failure, and interoperability evidence is
-present.
+The initial matrix baseline was commit `4ff4532` on 2026-08-01. The matrix is
+intentionally implementation-specific: a feature is not admitted because a
+metadata parser recognises its name. It is admitted only after the relevant
+lowering, cross-platform execution, bounded failure, and interoperability
+evidence is present.
 
 ## Design authority
 
@@ -38,7 +38,7 @@ constitute evidence that this implementation supports a feature.
 | --- | --- | --- |
 | V3 hierarchy | Groups, arrays, explicit navigation, bounded inline consolidation | JVM and Scala.js hierarchy suites and independent metadata fixtures |
 | V3 grid and keys | Regular grids, default keys, v2-compatible keys, scalar and arbitrary runtime rank | Shared geometry, grid, key, reader, and writer suites |
-| V3 data types | `bool`, signed and unsigned integers 8/16/32/64, `float32`, `float64` | Exact fill, endian, byte, selection, transpose, and writer tests |
+| V3 data types | `bool`, signed and unsigned integers 8/16/32/64, `float16`, `float32`, `float64`, `complex64`, `complex128`, and byte-multiple raw `rN` | Exact fill, endian, byte, selection, transpose, and independent Zarr-Python payload tests |
 | V3 common codecs | Bytes, transpose, gzip, CRC32C, and indexed sharding at start or end | Direct and sharded JVM/Scala.js fixtures, including writer output |
 | Optional codecs | Blosc and standalone Zstandard in `zarr4s-codec-blosc-zstd` | Provider metadata, bounded/corruption, direct, sharded, JVM, and Scala.js suites |
 | V2 reading | Groups and arrays lowered into the shared descriptor; C/F order; endian; dot/slash keys; consolidated metadata | V2 metadata, hierarchy, reader, and external compatibility fixtures |
@@ -50,7 +50,6 @@ constitute evidence that this implementation supports a feature.
 
 | Slice | Intended claim | Required proof |
 | --- | --- | --- |
-| Fixed-width carriers | V3 `float16`, `complex64`, `complex128`, and raw-width `rN`, with exact bits on both platforms | New scalar carriers, fill rules, bytes, transpose, selection, writer, and independent fixtures |
 | Listing capability | Optional `ObjectLister` and `AsyncObjectLister`; un-consolidated child discovery where the store can list | Memory/JVM listing, bounded discovery, explicit HTTP/Fetch capability behavior |
 | V2 delta | Dtype-aware v2 delta filter with correct `dtype`/`astype` and reverse execution | Independent delta fixtures, C/F and endian combinations, shuffle/compressor composition |
 | Sharding parity | Outer codec support and lawful fixed-size index codec profiles | Bounded whole-shard fallback, range fast path, writer output, and corruption fixtures |
@@ -64,6 +63,8 @@ The following remain unsupported until a concrete, lawful contract is added:
 - V2 object, variable-length, structured, string, datetime, and timedelta data.
 - V2 filters other than shuffle until their typed array semantics are implemented.
 - V3 variable-length and object-like data types.
+- Raw `rN` values are limited to positive, byte-multiple widths and do not
+  claim object, string, or structured semantics.
 - V3 storage transformers and non-regular chunk grids without a required
   standard extension and a bounded partial-read model.
 - Credentials, retries, persistent caches, prefetch, retention, and scheduler
@@ -134,13 +135,11 @@ external fixture evidence, or a clean dependency boundary is incomplete.
 ## Order of work
 
 1. Keep this matrix and the independent-fixture rules current.
-2. Add fixed-width carriers because they are shared by v3 completeness, v2
-   dtype compatibility, delta filtering, and writing.
-3. Add listing as an optional store capability so consolidated metadata is not
+2. Add listing as an optional store capability so consolidated metadata is not
    the only route to hierarchy discovery.
-4. Generalize array-codec execution and implement v2 delta.
-5. Complete sharding outer/index parity, then add create-only v2 writing.
-6. Admit additional optional codecs or extensions only after their own provider
+3. Generalize array-codec execution and implement v2 delta.
+4. Complete sharding outer/index parity, then add create-only v2 writing.
+5. Admit additional optional codecs or extensions only after their own provider
    and deployment courts pass.
 
 The epic is complete only when each planned claim has its required evidence or

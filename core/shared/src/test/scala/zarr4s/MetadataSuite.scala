@@ -128,10 +128,46 @@ class MetadataSuite extends munit.FunSuite:
         "uint16" -> 2,
         "uint32" -> 4,
         "uint64" -> 8,
+        "float16" -> 2,
         "float32" -> 4,
-        "float64" -> 8
+        "float64" -> 8,
+        "complex64" -> 8,
+        "complex128" -> 16
       )
     )
+
+  test("float16, complex, and raw fills compile with exact representations"):
+    val half = valid
+      .replace("\"float32\"", "\"float16\"")
+      .replace("\"NaN\"", "\"0x3c00\"")
+    assertEquals(descriptor(half).fillValue, StoredScalar.FloatingBits("0x3c00"))
+
+    val complex = valid
+      .replace("\"float32\"", "\"complex64\"")
+      .replace("\"NaN\"", "[1.5,\"0xc0000000\"]")
+    assertEquals(
+      descriptor(complex).fillValue,
+      StoredScalar.Complex(
+        StoredFloating.Value(1.5),
+        StoredFloating.Bits("0xc0000000")
+      )
+    )
+
+    val raw = valid
+      .replace("\"float32\"", "\"r24\"")
+      .replace("\"NaN\"", "[1,2,255]")
+    val rawDescriptor = descriptor(raw)
+    assertEquals(rawDescriptor.dataType.byteWidth, 3)
+    assertEquals(rawDescriptor.fillValue, StoredScalar.RawBytes(Vector(1, 2, 255)))
+    val rendered =
+      ZarrMetadataRenderer.array(rawDescriptor).fold(error => fail(error.message), identity)
+    assert(rendered.contains("\"data_type\":\"r24\""))
+    assert(rendered.contains("\"fill_value\":[1,2,255]"))
+
+  test("dynamic raw widths are restricted to positive whole bytes"):
+    assert(BuiltInDataTypes.raw(0).isEmpty)
+    assert(BuiltInDataTypes.raw(7).isEmpty)
+    assert(BuiltInDataTypes.raw(24).nonEmpty)
 
   test("boolean and unsigned fill values are exact and range checked"):
     val bool = valid

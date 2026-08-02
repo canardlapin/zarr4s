@@ -272,18 +272,21 @@ object V2ArrayDescriptor:
         case Some(found) if found > 0 => found
         case _                        => return unsupported(value)
       val name = (kind, width) match
-        case ('b', 1) => Some("bool")
-        case ('i', 1) => Some("int8")
-        case ('i', 2) => Some("int16")
-        case ('i', 4) => Some("int32")
-        case ('i', 8) => Some("int64")
-        case ('u', 1) => Some("uint8")
-        case ('u', 2) => Some("uint16")
-        case ('u', 4) => Some("uint32")
-        case ('u', 8) => Some("uint64")
-        case ('f', 4) => Some("float32")
-        case ('f', 8) => Some("float64")
-        case _        => None
+        case ('b', 1)  => Some("bool")
+        case ('i', 1)  => Some("int8")
+        case ('i', 2)  => Some("int16")
+        case ('i', 4)  => Some("int32")
+        case ('i', 8)  => Some("int64")
+        case ('u', 1)  => Some("uint8")
+        case ('u', 2)  => Some("uint16")
+        case ('u', 4)  => Some("uint32")
+        case ('u', 8)  => Some("uint64")
+        case ('f', 2)  => Some("float16")
+        case ('f', 4)  => Some("float32")
+        case ('f', 8)  => Some("float64")
+        case ('c', 8)  => Some("complex64")
+        case ('c', 16) => Some("complex128")
+        case _         => None
       name match
         case None => unsupported(value)
         case Some(found) if width == 1 && Set('|', '<', '>').contains(byteOrder) =>
