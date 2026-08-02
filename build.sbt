@@ -77,6 +77,20 @@ lazy val coreJVM = core.jvm
 lazy val codecBloscZstdJS = codecBloscZstd.js
 lazy val codecBloscZstdJVM = codecBloscZstd.jvm
 
+lazy val docs =
+  project
+    .in(file("site"))
+    .dependsOn(coreJVM)
+    .enablePlugins(org.typelevel.sbt.TypelevelSitePlugin)
+    .settings(
+      name := "zarr4s-site",
+      publish / skip := true,
+      mdocIn := (ThisBuild / baseDirectory).value / "site-docs",
+      mdocExtraArguments += "--clean-target",
+      tlSitePublishBranch := None,
+      tlSitePublishTags := false
+    )
+
 addCommandAlias(
   "compileAll",
   ";coreJVM/compile;coreJS/compile;codecBloscZstdJVM/compile;codecBloscZstdJS/compile"
@@ -87,5 +101,7 @@ addCommandAlias(
 )
 addCommandAlias(
   "checkAll",
-  ";scalafmtCheckAll;scalafmtSbtCheck;compileAll;testAll"
+  ";scalafmtCheckAll;scalafmtSbtCheck;compileAll;testAll;docs/tlSite"
 )
+
+addCommandAlias("docsCheck", ";docs/tlSite")
