@@ -1,23 +1,224 @@
 # zarr4s
 
-zarr4s is a portable Scala 3 implementation of Zarr v3 with create-only support
-for common Zarr v2 arrays and groups. The `zarr4s-core` artifact provides
-runtime-rank array metadata, chunk planning, codec programs, object-store
-capabilities, readers, create-only writers, and bounded caches.
+`zarr4s` is a Scala 3 implementation of Zarr v3 with create-only support for
+common Zarr v2 arrays and groups. The shared API cross-compiles to the JVM and
+Scala.js.
 
-The same API runs on the JVM and Scala.js. The name follows the Scala `*4s`
-convention; it does not refer to a Zarr format version.
+The `zarr4s-core` artifact is dependency-free. It supplies metadata validation,
+runtime-rank array descriptors, chunk planning, readers, writers, object-store
+capabilities, codec programs, and bounded caches. Platform code supplies JVM
+filesystem and HTTP transports or browser Fetch; optional codecs live in a
+separate artifact.
+
+> Current status: early development on the 0.1 line. Artifacts are not
+> published yet.
+
+## Quick start
+
+The following example writes a 2 × 3 `int16` Zarr v3 array to an in-memory
+store, then reads it back. It uses only `zarr4s-core`, so the shared code works
+on both platforms.
+
+<details>
+<summary>Complete in-memory example</summary>
 
 ```scala
 import zarr4s.*
+
+@main def quickstart(): Unit =
+  def value[A](result: Either[ZarrError, A]): A = result match
+    case Right(found) => found
+    case Left(error)  => throw IllegalArgumentException(error.message)
+
+  val metadata =
+    """{
+      |  "zarr_format": 3,
+      |  "node_type": "array",
+      |  "shape": [2, 3],
+      |  "data_type": "int16",
+      |  "chunk_grid": {
+      |    "name": "regular",
+      |    "configuration": {"chunk_shape": [2, 3]}
+      |  },
+      |  "chunk_key_encoding": {
+      |    "name": "default",
+      |    "configuration": {"separator": "/"}
+      |  },
+      |  "fill_value": 0,
+      |  "codecs": [
+      |    {"name": "bytes", "configuration": {"endian": "little"}}
+      |  ],
+      |  "dimension_names": ["y", "x"],
+      |  "attributes": {},
+      |  "storage_transformers": []
+      |}""".stripMargin
+
+  val descriptor = value(
+    ZarrMetadata.parse(metadata).flatMap:
+      case ZarrNodeMetadata.Array(array) => ArrayDescriptor.compile(array)
+      case ZarrNodeMetadata.Group(_)     => Left(ZarrError.UnsupportedNodeType("group"))
+  )
+
+  val values = PrimitiveBlock.Int16(
+    OwnedShorts.copyOf(Array[Short](1, 2, 3, 4, 5, 6))
+  )
+  val provider = new ChunkProvider:
+    def chunk(
+        _coordinate: ChunkCoordinate,
+        _storedShape: Shape
+    ): Either[ZarrError, ChunkPayload] = Right(ChunkPayload.Values(values))
+
+  val store = value(MemoryStore(Map.empty))
+  SyncZarrWriter.create(store, descriptor, provider).toEither match
+    case Left(error) => throw IllegalArgumentException(error.message)
+    case Right(_)    => ()
+
+  val opened = value(SyncZarr.openArray(store))
+  val origin = value(Coordinate(0L, 0L))
+  val region = value(Region.within(descriptor.shape, origin, descriptor.shape))
+  val result = value(opened.readRegion(region))
+
+  result.block match
+    case PrimitiveBlock.Int16(block) =>
+      println(s"values = ${block.toArray.toVector}")
+      println(s"bytes read = ${result.receipt.bytesRead}")
+    case _ => throw IllegalStateException("expected int16 data")
 ```
 
-## Modules and development
+</details>
 
-- `zarr4s-core` contains the dependency-free JVM/Scala.js kernel.
-- `zarr4s-codec-blosc-zstd` is an optional JVM/Scala.js codec provider.
+`SyncZarrWriter` is create-only: it never replaces an existing object and writes
+the primary metadata object last. A successful `WriteReceipt` identifies a
+complete publication. Reads return the decoded block together with an
+`ExecutionReceipt` containing actual requests and byte counters.
 
-The artifacts are not published yet. To verify a source checkout:
+For a separate JVM/Scala.js consumer build, see
+[`examples/standalone-consumer`](examples/standalone-consumer).
+
+## Modules and platforms
+
+| Module or platform | Provides |
+| --- | --- |
+| `zarr4s-core` | Shared metadata, planning, readers, writers, stores, caches, and codec runtime. |
+| JVM portion of `core` | Confined filesystem and checked HTTP range stores, blocking adapters, and atomic staged-directory publication. |
+| Scala.js portion of `core` | Fetch range reads, browser gzip/zlib, and the `BrowserZarr` facade. |
+| `zarr4s-codec-blosc-zstd` | Optional Blosc and standalone Zstandard providers for JVM and Scala.js. |
+
+The name follows the Scala `*4s` convention; it does not refer to a Zarr
+format version. Core has no cloud SDK, JNI, WebAssembly, or scientific-domain
+dependency.
+
+## API at a glance
+
+| Concern | Main API | Contract |
+| --- | --- | --- |
+| Metadata | `ZarrMetadata`, `ArrayDescriptor` | Parse and compile supported metadata into typed descriptors; unsupported required metadata returns `ZarrError`. |
+| Reading | `SyncZarr`, `AsyncZarr` | Open arrays and groups, read regions or points, and materialize or fold selected fragments. |
+| Writing | `SyncZarrWriter`, `AsyncZarrWriter` | Create arrays and groups without overwrite, resize, append, or concurrent mutation. |
+| Storage | `ObjectReader`, `ObjectWriter` and async variants | Callers provide object and listing capabilities; the core does not assume a filesystem or cloud service. |
+| Caching | `CachingObjectReader`, `CachingAsyncObjectReader` | Revision-scoped, bounded, deterministic LRU reuse with no global cache policy. |
+| Codecs | `CodecCapability`, codec executors, `CodecProgram` | Metadata validation and execution are separate; providers supply platform algorithms explicitly. |
+
+## Supported scope
+
+The current 0.1 line supports:
+
+- Zarr v3 arrays and groups, plus common Zarr v2 arrays and groups lowered to
+  the same descriptor model.
+- Explicit hierarchy navigation, bounded v2 `.zmetadata`, and v3 inline
+  consolidated indexes.
+- Runtime-rank arrays, including rank zero; regular chunk grids; default and
+  v2-compatible chunk keys; and `sharding_indexed` reads and writes.
+- Boolean values; every signed and unsigned integer width from 8 through 64
+  bits; `float16`, `float32`, `float64`, `complex64`, `complex128`; and bounded
+  raw-width `rN` carriers.
+- C and Fortran order through normative transpose, little- and big-endian byte
+  encoding, CRC32C, gzip, Zarr v2 zlib, common v2 shuffle, and dtype-aware
+  delta filters for fixed-width boolean, integer, and floating arrays.
+- Synchronous and asynchronous object capabilities, with portable backpressure
+  and caller-supplied scheduling limits.
+
+To publish v2 metadata, pass `format = ZarrFormat.V2` to a writer. The writer
+uses normative v2 chunk keys and creates the final `.zarray` or `.zgroup`
+completion marker after the preceding objects.
+
+### Selections
+
+Selections are runtime-rank and factored by axis. `All`, positive-step `Slice`,
+and ordered `Indices` selectors use Cartesian/orthogonal semantics; unsorted
+indices and duplicates remain in the requested order.
+
+<details>
+<summary>Factored selection example</summary>
+
+```scala
+val selected = for
+  boldShape <- Shape(1200L, 100L)
+  time <- AxisSelector.slice(0L, 1200L, step = 2L)
+  voxels <- AxisSelector.indices(3L, 11L, 42L, 11L)
+  selection <- FactoredSelection(boldShape, time, voxels)
+yield selection
+```
+
+</details>
+
+`selected` is an `Either[ZarrError, FactoredSelection]`. Pass the successful
+selection to `OpenedArray.read`; the duplicate voxel index `11` is preserved.
+`foldFragments` and `foreachFragment` expose the same chunk-local interpreter
+with explicit output placement and bounded synchronous or asynchronous
+backpressure.
+
+### Publication, caching, and diagnostics
+
+- A writer visits chunks in deterministic grid order, omits declared fill
+  chunks, bounds one encoded chunk or shard at a time, and reports complete or
+  incomplete progress. Generic object stores do not promise namespace rollback.
+- `WriteReceipt` records written objects, byte counts, omitted fill or padding
+  chunks, and portable SHA-256 identities.
+- A cache requires a caller-supplied immutable revision identity. It stores
+  exact objects and ranges, is bounded by bytes and entry count, uses
+  deterministic LRU eviction, and does not retain typed store errors or failed
+  futures.
+- `ExecutionReceipt` reports object, range, and length requests; index and data
+  bytes; requested logical bytes; touched chunks or shards; and read
+  amplification. Timing, retry, scheduling, credentials, and retention policy
+  remain caller concerns.
+
+### Explicit boundaries
+
+The core does not own scientific-domain profiles, S3 credentials, persistent
+caches, prefetch or retention policy, mutation, or every Zarr extension.
+Variable-length and structured values, v2 object arrays, and v2 filters beyond
+shuffle and dtype-aware delta are not claimed. Unsupported metadata fails
+through `ZarrError` instead of being guessed at. Descending slices are rejected.
+
+## Interoperability and verification
+
+- The common support matrix and conformance gates are recorded in
+  [`docs/plans/zarr-z9-common-zarr-support.md`](docs/plans/zarr-z9-common-zarr-support.md).
+- Codec architecture and extraction gates are recorded in
+  [`docs/plans/zarr-z6-codec-architecture.md`](docs/plans/zarr-z6-codec-architecture.md).
+- Interoperability suites read Zarr-Python fixtures, an attributed fixture from
+  [`zarrs`](https://github.com/zarrs/zarrs), and a pinned v2 fixture from the
+  official [`zarr_implementations`](https://github.com/zarr-developers/zarr_implementations)
+  corpus. The corpus's older draft-v3 material is not presented as current v3
+  conformance.
+- Optional external readback gates use
+  [`tools/verify_zarr_python_interop.py`](tools/verify_zarr_python_interop.py),
+  [`tools/verify_zarrs_v2_interop.py`](tools/verify_zarrs_v2_interop.py), and
+  [`tools/zarr-java-oracle`](tools/zarr-java-oracle).
+- The original extraction receipt remains in
+  [`canardlapin/scalafim`](https://github.com/canardlapin/scalafim/blob/main/docs/benchmarks/zarr-z8-profile-extraction.md).
+
+## Development
+
+Run the focused cross-platform gate from the repository root:
+
+```bash
+sbt coreJVM/test coreJS/test
+```
+
+Run the full gate, including the optional codec provider:
 
 ```bash
 npm ci --prefix codec-blosc-zstd/js
@@ -25,186 +226,15 @@ sbt checkAll
 ```
 
 `checkAll` checks formatting, compiles every module, and runs every JVM and
-Scala.js test. A sibling source build can be consumed with sbt `ProjectRef`s
-until immutable GitHub revisions and published artifacts are available.
+Scala.js test. To verify that an external consumer can compile against local
+artifacts:
 
-## 0.1 boundary
-
-The kernel supports Zarr v3 groups and arrays; read-only lowering of common v2
-arrays and groups into the same descriptor; explicit hierarchy navigation;
-bounded v2 `.zmetadata` and v3 inline consolidated indexes; runtime ranks
-including zero; regular chunk grids; default and v2-compatible chunk keys;
-Boolean values; every signed and unsigned integer width from 8 through 64 bits;
-float16; float32; float64; complex64; complex128; bounded raw-width `rN`
-carriers; C and Fortran order through normative transpose;
-little/big-endian byte encoding; the common Zarr v2 shuffle and dtype-aware delta
-filters for fixed-width boolean, integer, and floating arrays; chunk-local gzip and
-Zarr v2 zlib; CRC32C; and start/end
-`sharding_indexed` reads and writes. Shared code provides deterministic
-create-only v3 and common v2 array and group writers over synchronous or
-asynchronous object capabilities. Set `format = ZarrFormat.V2` to publish v2
-`.zattrs` before data and a final `.zarray` or `.zgroup` completion marker;
-v2 writers use normative v2 chunk keys with the descriptor's separator. The
-same shared `AsyncZarr` reader runs on the JVM and Scala.js;
-`BrowserZarr` remains a source-compatible facade that selects browser gzip and
-zlib by default. JVM adds confined filesystem and checked HTTP range stores, an
-explicit blocking-reader adapter whose blocking execution context is supplied
-at construction, and atomic staged-directory publication.
-An explicit blocking-codec adapter similarly lets portable async interpreters
-use a synchronous JVM codec only on a caller-supplied dedicated execution
-context; blocking work is never smuggled onto the callback context.
-Scala.js adds Fetch range reads and browser gzip/zlib; a caller-supplied
-`AsyncObjectWriter` provides the write transport without a cloud SDK in core.
-
-Selections are runtime-rank and factored by axis. `All`, positive-step `Slice`,
-and ordered `Indices` selectors compose with Cartesian/orthogonal semantics;
-unsorted indices and duplicates are preserved. The planner groups each axis
-independently and shares those factors across the chunk product, so a
-`time × masked-voxel` request does not become an in-memory list of every
-time/voxel coordinate. Descending slices currently refuse explicitly.
-
-```scala
-val selected = for
-  time <- AxisSelector.slice(0L, 1200L, step = 2L)
-  voxels <- AxisSelector.indices(maskedVoxelIds*)
-  selection <- FactoredSelection(boldShape, time, voxels)
-yield selection
+```bash
+sbt 'coreJVM/publishLocal' 'coreJS/publishLocal'
+cd examples/standalone-consumer
+sbt 'consumerJVM/compile' 'consumerJS/compile'
 ```
 
-`read(selection)` materializes through the same fragment interpreter exposed
-by `foldFragments` and `foreachFragment`. Each `ChunkFragment` contains only
-the selected values from one logical chunk plus an explicit output placement.
-Sync folds stop before the next store request; async folds await the returned
-`Future`, providing bounded backpressure without a streaming-framework
-dependency. `FragmentReceipt` separates index/data bytes, decoded/fill chunks,
-emitted fragments/elements, completion, and read amplification.
-
-Remote reuse is an explicit capability rather than a process global:
-
-```scala
-val cached = for
-  revision <- CacheNamespace.from("manifest:blake3:8d7b...")
-yield CachingAsyncObjectReader(
-  remoteStore,
-  ObjectReadCache(revision, CacheLimits.default)
-)
-```
-
-An `ObjectReadCache` cannot exist without a caller-supplied immutable revision
-identity. It stores exact whole objects, ranges, and lengths; a requested range
-may reuse a cached containing range or whole object. Entries are bounded by
-both bytes and count, evicted by deterministic LRU order, and copied at cache
-ingress and egress. The async decorator collapses identical in-flight requests
-but never retains a typed store error or failed `Future`. `CacheStats` reports
-hits, misses, downstream requests, fetched/served/evicted bytes, resident size,
-and single-flight joins. There is deliberately no global cache, TTL, retry,
-persistence, credential, or prefetch policy. `ReadLimits.maxConcurrentRequests`
-remains the sole reader scheduling bound.
-
-Writing is a capability, not a filesystem assumption:
-
-```scala
-val written = ZarrPath("subjects/sub-01/bold").map: path =>
-  SyncZarrWriter.create(
-    store = objectWriter,
-    descriptor = array,
-    provider = chunks,
-    path = path
-  )
-```
-
-`ObjectWriter.create` and `AsyncObjectWriter.create` create one immutable
-object and refuse replacement. The interpreters visit chunks in deterministic
-grid order, omit declared fill chunks, bound one encoded chunk or shard at a
-time, and create the primary metadata object last. `WriteOutcome.Complete`
-therefore has a completion marker. `WriteOutcome.Incomplete` retains the exact
-objects, bytes,
-logical chunks, fill/padding omissions, and typed error seen before an
-object-store interruption; it never implies namespace rollback. Async writing
-waits for each provider, codec, and object effect before advancing, providing
-portable backpressure. `JvmZarrWriter` strengthens this base contract by
-cleaning a private stage and atomically moving the completed directory.
-
-Every written object and the primary metadata marker carry a portable SHA-256
-identity in `WriteReceipt`. The same interpreter handles scalar, empty, and
-arbitrary rank arrays, all built-in fixed-width carriers, transpose, default and v2 chunk
-keys, CRC32C, platform gzip/zlib, optional byte-codec providers, and start/end
-indexed sharding. It deliberately provides no overwrite, resize, append, or
-concurrent-mutation operation.
-
-`ConsolidationMode` makes index policy explicit. A caller can prefer, require,
-or ignore consolidation. Explicit paths remain navigable when an index is
-absent. Synchronous groups can discover un-consolidated children when the
-caller supplies an `ObjectLister`; asynchronous groups expose the same
-operation through `discoverChildren` and `AsyncObjectLister`. Memory and JVM
-filesystem stores provide listing, while HTTP and Fetch remain caller-provided
-capabilities. Without a listing capability, child enumeration refuses
-honestly. V3 inline consolidation is treated as an optional interoperability
-extension rather than a claim that it is part of the normative v3
-specification.
-
-It intentionally does not own scientific-domain profiles, mutation, S3
-credentials, persistent caches, prefetch or retention policy, or every
-extension. Variable-length, structured values, v2 object arrays, and v2
-filters beyond shuffle and dtype-aware delta are not yet claimed. Unsupported
-metadata crosses a typed error boundary instead of being guessed at.
-
-The core has no production library dependency. Its runtime-rank values,
-immutable descriptors, pure planners, explicit codec and store capabilities,
-and JVM/Scala.js interpreters are suitable for scientific workloads without
-embedding a particular array rank or domain model.
-
-Codec extension has two explicit halves. A `CodecCapability` validates JSON
-and compiles it into a stage; a `SyncByteCodecExecutor` or
-`AsyncByteCodecExecutor` supplies that stage's algorithm at the IO boundary.
-`CodecProgram` makes representation transitions lawful before a descriptor can
-open. Immutable runtimes reject duplicate providers and report a known schema
-with a missing executor as a typed capability error. This keeps optional JNI,
-WASM, or JavaScript codecs in separate provider artifacts without adding a
-match branch or dependency to the kernel.
-
-Data types follow the same principle without dispatching on names in the hot
-path. A `DataTypeCapability` owns exact fill parsing and selects a `ScalarKind`;
-that closed carrier algebra owns primitive-block compatibility, allocation,
-assembly, and endian serialization. A downstream fixed-width type can reuse a
-lawful carrier (for example, a constrained unsigned byte) without teaching the
-kernel its identifier. Array-to-array codecs expose explicit shape laws, so
-transpose composes with bytes and compression at arbitrary rank on both
-platforms.
-
-The optional `zarr4s-codec-blosc-zstd` module extends that seam with Blosc/Zstd
-and standalone Zstandard codecs. It leaves this kernel dependency-free while
-testing native JVM and pure-JavaScript implementations on Scala.js.
-
-The executable architecture and extraction gates are recorded in
-[`docs/plans/zarr-z6-codec-architecture.md`](docs/plans/zarr-z6-codec-architecture.md).
-The common-feature support matrix and conformance courts are recorded in
-[`docs/plans/zarr-z9-common-zarr-support.md`](docs/plans/zarr-z9-common-zarr-support.md).
-The repository also contains a deliberately independent JVM/Scala.js consumer
-under [`examples/standalone-consumer`](examples/standalone-consumer).
-Interoperability tests read both Zarr-Python fixtures and an attributed fixture
-written by the independent [`zarrs`](https://github.com/zarrs/zarrs) Rust
-implementation. A second pinned fixture comes from the official
-[`zarr_implementations`](https://github.com/zarr-developers/zarr_implementations)
-compatibility corpus and exercises a Zarr v2 group, dot chunk key, uint8 data,
-and gzip on both platforms. Its older draft-v3 material is not presented as
-current Zarr v3 conformance. The create-only V2 writer has opt-in external
-readback gates in [`tools/verify_zarr_python_interop.py`](tools/verify_zarr_python_interop.py)
-and [`tools/verify_zarrs_v2_interop.py`](tools/verify_zarrs_v2_interop.py).
-
-The opt-in [`tools/zarr-java-oracle`](tools/zarr-java-oracle) project
-provides a reciprocal zarr-java 0.1.3 gate without entering the Scala module
-graph: zarr-java opens Scala-published arrays, while the shared JVM/Scala.js
-suite reads a SHA-pinned direct v3 fixture written by zarr-java. The tool's
-heavy transitive JVM graph is therefore evidence, not a core dependency.
-
-The original extraction receipt remains in the
-[`canardlapin/scalafim`](https://github.com/canardlapin/scalafim/blob/main/docs/benchmarks/zarr-z8-profile-extraction.md)
-repository.
-
-Reads return an `ExecutionReceipt` containing actual object/range/length
-requests, index and data bytes, requested logical bytes, touched chunks/shards,
-and read amplification. Writes return complete or incomplete receipts with
-portable content hashes and physical counters. Diagnostics are values; the
-kernel does not log or hide timing, retry, scheduling, or cache policy in
-globals.
+The optional provider has its own setup instructions in
+[`codec-blosc-zstd/README.md`](codec-blosc-zstd/README.md). Design and
+verification notes are indexed in [`docs/README.md`](docs/README.md).
