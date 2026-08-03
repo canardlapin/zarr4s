@@ -10,7 +10,7 @@ This court isolates the adapter boundary after Zarr decoding. Correctness and ow
 - shape: 512 by 512, 262,144 elements, 1,048,576 logical bytes
 - chunk shape: 64 by 64, 16,384 bytes
 - codec: none in this isolated materialization court
-- zarr4s base revision: `7f2c8ae0f5f1edeab4dcf7accd43e4bc3046718e` plus the uncommitted Z11 implementation under review
+- zarr4s candidate revision: `dcffada0188ac35c30ebe93b74cf862d1e9f04b9`
 - Ravel revision: `d0f7bacfe3b750519dc49aca8fd466ef70ef24ec`
 - host: Darwin 23.3.0, arm64; JVM launcher: Homebrew Java 25.0.1; Node.js 24.1.0
 
@@ -41,20 +41,25 @@ Raw CSV:
 
 ```text
 scenario,logical_bytes,chunk_bytes,warmup_iterations,measurement_iterations,allocated_bytes_per_operation,peak_heap_delta_bytes,nanoseconds_per_operation,throughput_mib_per_second,checksum
-direct-read-materialize,1048576,0,5,20,1052064,2097152,142191,7032.762,0
-dense-bridge-materialize,1048576,0,2,8,9439872,14680064,892218,1120.801,262144
-canonical-write-source,1048576,0,100,1000,376,0,2790,358305.174,262144
-canonical-write-chunk,1048576,16384,20,200,17376,0,71943,13899.828,4096
-explicit-view-materialization,1048576,0,2,8,1052056,2097152,527395,1896.109,262144
+direct-read-materialize,1048576,0,5,20,1052064,2097152,196512,5088.735,0
+dense-bridge-materialize,1048576,0,2,8,9439872,15728640,1010656,989.456,262144
+canonical-write-source,1048576,0,100,1000,376,0,3673,272241.594,262144
+canonical-write-chunk,1048576,16384,20,200,17376,0,121782,8211.360,4096
+explicit-view-materialization,1048576,0,2,8,1052124,2097152,384114,2603.390,262144
 ```
 
 The direct read allocated 1,052,064 bytes: one 1,048,576-byte Ravel output buffer plus 3,488 bytes of shape, owner, and measurement-visible scaffolding beyond the already decoded PrimitiveBlock. The DenseArray bridge allocated 9,439,872 bytes, about nine times the direct path, because its safe ownership boundaries and Ravel construction require multiple whole-buffer copies and sequence adaptation.
 
 Canonical source refinement allocated 376 bytes, independent of the 1 MiB source payload. Producing one canonical write chunk allocated 17,376 bytes, only 992 bytes beyond its 16,384-byte nominal chunk buffer and far below the whole-array size. The first court run exposed a successful `Either` allocation per copied element; changing successful scalar copies to the allocation-free `None` case reduced the measured chunk operation from 82,912 to 17,376 bytes while retaining typed mismatch errors.
 
-The explicit view path allocated 1,052,056 bytes and is reported separately. That cost is intentional canonical materialization and must not be folded into claims about canonical writes.
+The explicit view path allocated 1,052,124 bytes and is reported separately. That cost is
+intentional canonical materialization and must not be folded into claims about canonical writes.
 
-The sampled peak heap deltas were 2 MiB for direct materialization, 14 MiB for the DenseArray bridge, and 2 MiB for explicit view materialization. Source refinement and the 16 KiB chunk did not rise above the memory-pool counter baseline. Their retained source-side storage bounds are established directly by ownership and allocation receipts: no new full source buffer for canonical refinement and one nominal chunk buffer for chunk production.
+The sampled peak heap deltas were 2 MiB for direct materialization, 15 MiB for the DenseArray
+bridge, and 2 MiB for explicit view materialization. Source refinement and the 16 KiB chunk did not
+rise above the memory-pool counter baseline. Their retained source-side storage bounds are
+established directly by ownership and allocation receipts: no new full source buffer for canonical
+refinement and one nominal chunk buffer for chunk production.
 
 ## Scala.js raw receipt
 
@@ -78,14 +83,19 @@ Raw CSV:
 
 ```text
 scenario,logical_bytes,chunk_bytes,array_buffer_delta_bytes,elapsed_milliseconds,canonical,whole_buffer,exact_dtype
-direct-read-materialize,1048576,0,1048600,4,true,true,true
-dense-bridge-materialize,1048576,0,5243152,11,true,true,true
+direct-read-materialize,1048576,0,1048600,3,true,true,true
+dense-bridge-materialize,1048576,0,5243152,7,true,true,true
 canonical-write-source,1048576,0,48,0,true,true,true
-canonical-write-chunk,1048576,16384,0,5,true,true,true
-explicit-view-materialization,1048576,0,1048656,4,true,true,true
+canonical-write-chunk,1048576,16384,16400,2,true,true,true
+explicit-view-materialization,1048576,0,1048656,3,true,true,true
 ```
 
-The direct Scala.js path added 1,048,600 array-buffer bytes, 24 bytes beyond one logical Int32 output buffer. The DenseArray bridge added 5,243,152 bytes, roughly five logical buffers. Canonical source refinement added only 48 rank/metadata bytes, and explicit view materialization added one full output buffer plus 80 bytes. The zero chunk delta is qualified as Node counter resolution or allocator reuse; the output was still an exact Int32 `PrimitiveBlock`, and no JavaScript chunk-memory budget is inferred from that zero.
+The direct Scala.js path added 1,048,600 array-buffer bytes, 24 bytes beyond one logical Int32 output
+buffer. The DenseArray bridge added 5,243,152 bytes, roughly five logical buffers. Canonical source
+refinement added only 48 rank/metadata bytes, the chunk operation added its 16,384-byte typed buffer
+plus 16 bytes, and explicit view materialization added one full output buffer plus 80 bytes. The JVM
+thread-allocation count remains the chunk budget authority because Node's counter can vary with
+allocator reuse.
 
 ## Interpretation
 

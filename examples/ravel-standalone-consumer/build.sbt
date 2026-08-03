@@ -6,7 +6,7 @@ import scalajscrossproject.ScalaJSCrossPlugin.autoImport.*
 ThisBuild / scalaVersion := "3.7.4"
 
 lazy val zarr4sVersion =
-  sys.props.getOrElse("zarr4s.version", "0.1.0-z11.7f2c8ae")
+  sys.props.getOrElse("zarr4s.version", "0.1.0-z11.dcffada")
 
 lazy val ravelVersion =
   sys.props.getOrElse("ravel.version", "0.0.0-d0f7bac")

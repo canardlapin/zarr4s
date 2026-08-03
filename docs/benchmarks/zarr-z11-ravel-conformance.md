@@ -6,8 +6,8 @@ This court tests the optional `zarr4s-interop-ravel` adapter as a general Zarr b
 
 ## Revisions and runtimes
 
-- zarr4s base revision: `7f2c8ae0f5f1edeab4dcf7accd43e4bc3046718e` plus the uncommitted Z11 implementation under review
-- Ravel revision used to publish the local `1.0.0-SNAPSHOT`: `d0f7bacfe3b750519dc49aca8fd466ef70ef24ec`
+- zarr4s candidate revision: `dcffada0188ac35c30ebe93b74cf862d1e9f04b9`
+- Ravel revision published locally as `0.0.0-d0f7bac`: `d0f7bacfe3b750519dc49aca8fd466ef70ef24ec`
 - Scala: 3.7.4; sbt: 1.11.7
 - JVM test launcher: Homebrew Java 25.0.1; shell Java: OpenJDK 22
 - Scala.js test runtime: Node.js 24.1.0
@@ -19,7 +19,8 @@ The adapter remains unpublished while Ravel has no immutable published release. 
 
 ## Shared semantic court
 
-The same interop sources and semantic tests run on JVM and Scala.js. On both platforms, `interopRavelJVM/test` and `interopRavelJS/test` passed 22 tests. Together the suites cover:
+The same interop sources and semantic tests run on JVM and Scala.js. `interopRavelJVM/test` passed
+24 tests and `interopRavelJS/test` passed 23 tests. Together the suites cover:
 
 - all nine exact dtypes, including signed extrema, unsigned maxima, negative zero, infinities, and NaN payload preservation;
 - scalar, empty, rank-one, rank-two, and rank-five shapes, plus overflow rejection before Ravel allocation;
@@ -33,12 +34,13 @@ A browser smoke was not added: the optional WebAssembly codec already has its ow
 Command:
 
 ```text
-sbt -batch interopRavelJVM/test interopRavelJS/test
+sbt -Dravel.version=0.0.0-d0f7bac -batch interopRavelJVM/test interopRavelJS/test
 ```
 
 ## Independent bidirectional courts
 
-The filesystem court used `/tmp/zarr4s-z11-conformance.E4jZi6` for this run. It is reproducible with a fresh temporary directory:
+The exact-revision filesystem court used `/private/tmp/zarr4s-z11-exact.X8RfDL` for this run. It
+is reproducible with a fresh temporary directory:
 
 ```text
 sbt -batch \

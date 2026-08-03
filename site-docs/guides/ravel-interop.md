@@ -132,6 +132,6 @@ Use `readRegionNDArray`, `readPointsNDArray`, and `readNDArray` for synchronous 
 
 The adapter does not add storage backends, retries, credentials, codecs, caching, overwrite, append, resize, deletion, labels, units, calibration, image meaning, or another array abstraction to Zarr metadata. Supply those policies through zarr4s or a downstream library. Optional codecs remain separate artifacts and runtimes.
 
-The guide's mdoc workflow executes on the JVM. The same public adapter sources and semantic suite run on JVM and Node.js Scala.js; the standalone consumer compiles and runs both published platform artifacts. This page does not claim Scala Native support or browser performance.
+The guide's mdoc workflow executes on the JVM. The same public adapter sources and semantic suite run on JVM and Node.js Scala.js; the standalone consumer compiles and runs both platform artifacts published to the local verification repository. This page does not claim Scala Native support or browser performance.
 
 Next: [create and navigate a group](groups.md).
