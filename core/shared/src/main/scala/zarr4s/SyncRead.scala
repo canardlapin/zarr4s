@@ -1224,6 +1224,24 @@ final class OpenedGroup private[zarr4s] (
       case OpenedNode.Array(_)     => Left(ZarrError.UnsupportedNodeType("array"))
 
 object SyncZarr:
+  /** Create a group through the same high-level result vocabulary as typed arrays. */
+  def createGroup(
+      store: ObjectWriter,
+      spec: GroupSpec = GroupSpec(),
+      path: ZarrPath = ZarrPath.root,
+      limits: WriterLimits = WriterLimits()
+  ): GroupWriteResult =
+    GroupWriteResult(
+      spec,
+      SyncZarrWriter.createGroup(
+        store,
+        GroupMetadata(spec.attributes, JsonObject.empty),
+        path,
+        limits,
+        spec.format
+      )
+    )
+
   def createArray[D <: DType](
       store: ObjectWriter,
       spec: ArraySpec[D],

@@ -14,6 +14,9 @@ class JvmTypedFacadeSuite extends munit.FunSuite:
   private def data(shape: Shape, values: Short*): DenseArray[DType.Int16.type] =
     value(DenseArray.copyOf(DType.Int16, shape, values.toArray))
 
+  private def json(fields: (String, JsonValue)*): JsonObject =
+    JsonObject.from(fields).fold(fail(_), identity)
+
   test("JVM Path create-and-open publishes atomically and reads typed values"):
     val parent = Files.createTempDirectory("zarr4s-typed-jvm")
     val target = parent.resolve("nested").resolve("array.zarr")
@@ -99,3 +102,52 @@ class JvmTypedFacadeSuite extends munit.FunSuite:
     val entries = Files.list(parent)
     try assertEquals(entries.iterator().asScala.toVector, Vector.empty)
     finally entries.close()
+
+  test("JVM Path group facade publishes atomically and discovers children"):
+    val parent = Files.createTempDirectory("zarr4s-typed-jvm-group")
+    val target = parent.resolve("study.zarr")
+    val attributes = json("title" -> JsonValue.Str("measurements"))
+    val created = JvmZarr.createGroup(target, GroupSpec(attributes))
+    assert(created.outcome.toEither.isRight)
+
+    val shape = value(Shape(2L, 2L))
+    val child = value(ZarrPath("measurements"))
+    val store = value(JvmFileStore.openChecked(target))
+    val childWrite = value(
+      SyncZarr.createArray(
+        store,
+        spec(shape, value(Shape(1L, 2L))),
+        data(shape, 1, 2, 3, 4),
+        path = child,
+        runtime = JvmCodecRuntime.portable
+      )
+    )
+    assert(childWrite.outcome.toEither.isRight)
+
+    val opened = value(JvmZarr.openGroup(target))
+    assertEquals(opened.metadata.attributes, attributes)
+    assertEquals(
+      value(opened.children).map(entry => entry.path.value -> entry.kind),
+      Vector("measurements" -> NodeKind.Array)
+    )
+    val typed = value(JvmZarr.openTypedArray(target, DType.Int16, path = child))
+    assertEquals(value(typed.readAll()).data.toArray.toVector, Vector[Short](1, 2, 3, 4))
+
+  test("JVM Path opening keeps node mismatches and invalid roots typed"):
+    val parent = Files.createTempDirectory("zarr4s-typed-jvm-open")
+    val target = parent.resolve("array.zarr")
+    val shape = value(Shape(2L))
+    assert(
+      value(
+        JvmZarr.createArray(target, spec(shape, shape), data(shape, 4, 5))
+      ).outcome.toEither.isRight
+    )
+
+    JvmZarr.openGroup(target) match
+      case Left(ZarrError.UnsupportedNodeType("array")) => ()
+      case other => fail(s"expected an array/group mismatch, found $other")
+
+    JvmZarr.openNode(parent.resolve("missing.zarr")) match
+      case Left(ZarrError.StoreFailure(StoreError.InvalidRoot(detail))) =>
+        assert(detail.nonEmpty)
+      case other => fail(s"expected a typed invalid-root failure, found $other")

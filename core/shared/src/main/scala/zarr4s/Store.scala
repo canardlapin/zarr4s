@@ -4,6 +4,7 @@ import scala.collection.mutable
 import scala.concurrent.Future
 
 enum StoreError:
+  case InvalidRoot(detail: String)
   case Unauthorized(key: StoreKey)
   case Forbidden(key: StoreKey)
   case NotFound(key: StoreKey)
@@ -17,10 +18,11 @@ enum StoreError:
   case Transport(key: StoreKey, detail: String, transient: Boolean)
 
   def message: String = this match
-    case Unauthorized(key)  => s"unauthorized store object ${key.value}"
-    case Forbidden(key)     => s"forbidden store object ${key.value}"
-    case NotFound(key)      => s"store object not found: ${key.value}"
-    case AlreadyExists(key) => s"store object already exists: ${key.value}"
+    case InvalidRoot(detail) => s"invalid store root: $detail"
+    case Unauthorized(key)   => s"unauthorized store object ${key.value}"
+    case Forbidden(key)      => s"forbidden store object ${key.value}"
+    case NotFound(key)       => s"store object not found: ${key.value}"
+    case AlreadyExists(key)  => s"store object already exists: ${key.value}"
     case RangeNotSatisfiable(key, range, objectLength) =>
       s"range ${range.offset}:${range.length.toLong} exceeds ${key.value} length $objectLength"
     case RangeIgnored(key, range) =>

@@ -34,7 +34,7 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Build guide
-        run: sbt -J-Xmx4G -batch docs/tlSite
+        run: sbt -J-Xmx4G -batch docsBundle
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

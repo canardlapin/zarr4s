@@ -33,6 +33,27 @@ object JvmZarrWriter:
       runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
       format: ZarrFormat = ZarrFormat.V3
   ): WriteOutcome =
+    createStaged(target): store =>
+      SyncZarrWriter.create(
+        store,
+        descriptor,
+        provider,
+        limits = limits,
+        runtime = runtime,
+        format = format
+      )
+
+  /** Atomic filesystem group creation retaining incomplete writer progress. */
+  def createGroupOutcome(
+      target: Path,
+      metadata: GroupMetadata,
+      limits: WriterLimits = WriterLimits(),
+      format: ZarrFormat = ZarrFormat.V3
+  ): WriteOutcome =
+    createStaged(target): store =>
+      SyncZarrWriter.createGroup(store, metadata, limits = limits, format = format)
+
+  private def createStaged(target: Path)(write: ObjectWriter => WriteOutcome): WriteOutcome =
     val empty = new WriteProgress(Vector.empty, Vector.empty, 0L, 0L, 0L, 0L, ByteCount.zero)
     val absolute = target.toAbsolutePath.normalize()
     val parent = absolute.getParent
@@ -49,15 +70,7 @@ object JvmZarrWriter:
             JvmFileStore.open(stage) match
               case Left(detail) => WriteOutcome.Incomplete(empty, ZarrError.WriteFailure(detail))
               case Right(store) =>
-                SyncZarrWriter
-                  .create(
-                    store,
-                    descriptor,
-                    provider,
-                    limits = limits,
-                    runtime = runtime,
-                    format = format
-                  ) match
+                write(store) match
                   case incomplete @ WriteOutcome.Incomplete(_, _) => incomplete
                   case WriteOutcome.Complete(receipt)             =>
                     publish(stage, absolute) match

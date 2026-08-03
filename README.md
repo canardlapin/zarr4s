@@ -1,6 +1,6 @@
 # zarr4s
 
-[![CI](https://github.com/canardlapin/zarr4s/actions/workflows/ci.yml/badge.svg)](https://github.com/canardlapin/zarr4s/actions/workflows/ci.yml) · [Guide](https://canardlapin.github.io/zarr4s/) · [Apache-2.0](LICENSE) · [Design notes](docs/README.md) · [Standalone consumer](examples/standalone-consumer/)
+[![CI](https://github.com/canardlapin/zarr4s/actions/workflows/ci.yml/badge.svg)](https://github.com/canardlapin/zarr4s/actions/workflows/ci.yml) · [Guide](https://canardlapin.github.io/zarr4s/) · [API](https://canardlapin.github.io/zarr4s/reference/api-map.html) · [Apache-2.0](LICENSE) · [Standalone consumer](examples/standalone-consumer/)
 
 `zarr4s` is a cross-platform Scala 3 library for creating, reading, and
 validating Zarr arrays and groups on the JVM and Scala.js. Use it when you need
@@ -302,8 +302,9 @@ through `ZarrError` instead of being guessed at. Descending slices are rejected.
 
 ## Documentation map
 
-- [User guide](https://canardlapin.github.io/zarr4s/) — getting started,
-  concepts, and task-oriented reading examples.
+- [User guide](https://canardlapin.github.io/zarr4s/) — installation status,
+  the typed model, complete read/write/group workflows, platform and codec
+  choices, support reference, and troubleshooting.
 - [Standalone consumer](examples/standalone-consumer/) — compile and run a
   public-artifact JVM/Scala.js consumer.
 - [Design and verification records](docs/README.md) — current guarantees,
