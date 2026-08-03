@@ -109,6 +109,42 @@ def verify_scala(root: Path) -> None:
         expected = np.asarray(values, dtype=np.dtype(dtype)).reshape(2, 3)
         np.testing.assert_array_equal(np.asarray(written[:]), expected)
 
+    ravel_values = {
+        "bool": [False, True, False, True, True, False],
+        "int8": [-128, -1, 0, 1, 42, 127],
+        "uint8": [0, 1, 127, 128, 254, 255],
+        "int16": [-32768, -1, 0, 1, 42, 32767],
+        "uint16": [0, 1, 32767, 32768, 65534, 65535],
+        "int32": [-(2**31), -1, 0, 1, 42, 2**31 - 1],
+        "int64": [-(2**63), -1, 0, 1, 42, 2**63 - 1],
+    }
+    for dtype, values in ravel_values.items():
+        written = zarr.open_array(root / f"ravel-{dtype}.zarr", mode="r")
+        expected = np.asarray(values, dtype=np.dtype(dtype)).reshape(2, 3)
+        np.testing.assert_array_equal(np.asarray(written[:]), expected)
+
+    for dtype, values in {
+        "float32": [0.0, -0.0, 1.5, -2.25, np.inf, np.nan],
+        "float64": [0.0, -0.0, 1.5, -2.25, np.inf, np.nan],
+    }.items():
+        written = np.asarray(zarr.open_array(root / f"ravel-{dtype}.zarr", mode="r")[:])
+        expected = np.asarray(values, dtype=np.dtype(dtype)).reshape(2, 3)
+        np.testing.assert_array_equal(written, expected)
+        np.testing.assert_array_equal(written.view(f"u{written.dtype.itemsize}"), expected.view(f"u{expected.dtype.itemsize}"))
+
+    np.testing.assert_array_equal(
+        np.asarray(zarr.open_array(root / "ravel-border.zarr", mode="r")[:]),
+        np.arange(15, dtype=np.int32).reshape(3, 5),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(zarr.open_array(root / "ravel-sharded.zarr", mode="r")[:]),
+        np.arange(1, 17, dtype=np.int16).reshape(4, 4),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(zarr.open_array(root / "ravel-v2-int16.zarr", mode="r")[:]),
+        np.array([[1, -2, 300], [4, 5, -6]], dtype=np.int16),
+    )
+
     with tempfile.TemporaryDirectory(prefix="zarr4s-core-corrupt-") as directory:
         corrupt = Path(directory) / "rank5.zarr"
         shutil.copytree(rank_five_path, corrupt)

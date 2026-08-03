@@ -46,6 +46,7 @@ both platforms.
 | --- | --- | --- |
 | `zarr4s-core` | You need metadata, arrays, groups, stores, reads, create-only writes, or built-in codecs. | None in the shared core. JVM and browser transports use their platform libraries. |
 | `zarr4s-codec-blosc-zstd` | Existing data requires Blosc or standalone Zstandard, or you choose those codecs when writing. | `blosc-java` and `zstd-jni` on the JVM; pinned npm packages on Scala.js. |
+| `zarr4s-interop-ravel` | You need first-party conversion between typed Zarr arrays and immutable Ravel NDArrays. | Ravel. Publication remains blocked until Ravel has an immutable release. |
 
 For the optional Scala.js codec provider, install its pinned JavaScript
 dependencies before compiling it:
@@ -53,6 +54,11 @@ dependencies before compiling it:
 ```text
 npm ci --prefix codec-blosc-zstd/js
 ```
+
+The optional Ravel adapter currently has a separate
+[commit-labelled local consumer](https://github.com/canardlapin/zarr4s/tree/main/examples/ravel-standalone-consumer).
+It is not included in the ordinary core publication commands above because its
+dependency prerequisite is not yet available as an immutable public artifact.
 
 ## What changes after the first release
 

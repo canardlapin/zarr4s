@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in zarrs 0.23.13 readback gate for a zarr4s v2 writer fixture."""
+"""Opt-in zarrs 0.23.13 readback gate for zarr4s and Ravel v2 writer fixtures."""
 
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[1, -2, 300, 4, 5, -6],
     )?;
     read(&root.join("facade-v2.zarr"), &[7, 8, 9, 10, 11, 12])?;
+    read(&root.join("ravel-v2-int16.zarr"), &[1, -2, 300, 4, 5, -6])?;
     Ok(())
 }
 '''
@@ -53,7 +54,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
     arguments = parser.parse_args()
-    for name in ("v2-gzip.zarr", "facade-v2.zarr"):
+    for name in ("v2-gzip.zarr", "facade-v2.zarr", "ravel-v2-int16.zarr"):
         fixture = arguments.root / name
         if not fixture.is_dir():
             parser.error(f"missing writer fixture: {fixture}")

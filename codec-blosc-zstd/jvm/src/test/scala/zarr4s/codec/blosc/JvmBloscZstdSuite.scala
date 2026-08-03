@@ -1,6 +1,8 @@
 package zarr4s.codec.blosc
 
+import _root_.ravel.{NDArray, Shape as RavelShape}
 import zarr4s.*
+import zarr4s.ravel.*
 
 class JvmBloscZstdSuite extends munit.FunSuite:
   private val decoded = OwnedBytes.copyOf(Array.tabulate[Byte](4096): index =>
@@ -123,6 +125,34 @@ class JvmBloscZstdSuite extends munit.FunSuite:
         assertEquals(values.toArray.toVector, Vector[Short](1, -2, 300, 4, 5, -6))
       case _ => fail("expected int16 result")
 
+  test("installed JVM Blosc runtime round-trips a canonical Ravel source"):
+    val values = BloscPythonFixtures.directValues
+    val array = NDArray.fromSeq(RavelShape(2, 3), values)
+    val source = rvalue(RavelArraySource.fromCanonical(DType.Float32, array))
+    val descriptor = zvalue(BloscPythonFixtures.descriptor(BloscPythonFixtures.directMetadata))
+    val provider = rvalue(source.typedProvider(descriptor))
+    val store = zvalue(MemoryStore.empty)
+    SyncZarrWriter.create(
+      store,
+      descriptor,
+      provider.underlying,
+      runtime = JvmBloscZstdRuntime.portable,
+      format = ZarrFormat.V2
+    ) match
+      case WriteOutcome.Incomplete(_, error) => fail(error.message)
+      case WriteOutcome.Complete(_)          => ()
+
+    val opened = zvalue(
+      SyncZarr.openTypedArray(
+        store,
+        DType.Float32,
+        capabilities = BloscZstdProvider.capabilities(),
+        runtime = JvmBloscZstdRuntime.portable
+      )
+    )
+    val result = rvalue(opened.readAllNDArray())
+    assert(result.data.sameElementsBits(array))
+
   private def zcodec(
       level: Int,
       shuffle: BloscShuffle,
@@ -157,6 +187,10 @@ class JvmBloscZstdSuite extends munit.FunSuite:
       case _                              => fail("expected float32 result")
 
   private def zvalue[A](value: Either[ZarrError, A]): A = value match
+    case Right(found) => found
+    case Left(error)  => fail(error.message)
+
+  private def rvalue[A](value: Either[RavelInteropError, A]): A = value match
     case Right(found) => found
     case Left(error)  => fail(error.message)
 

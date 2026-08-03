@@ -6,6 +6,7 @@ import scalajscrossproject.ScalaJSCrossPlugin.autoImport.*
 
 val Scala3 = "3.7.4"
 val munitV = "1.2.1"
+val ravelV = sys.props.getOrElse("ravel.version", "1.0.0-SNAPSHOT")
 
 lazy val docsBundle = taskKey[File]("Build the guide and bundled per-platform API reference")
 
@@ -42,7 +43,7 @@ lazy val jsSettingsBase = Seq(
 )
 
 lazy val root = tlCrossRootProject
-  .aggregate(core, codecBloscZstd, benchmarks)
+  .aggregate(core, codecBloscZstd, interopRavel, benchmarks)
 
 lazy val core =
   crossProject(JSPlatform, JVMPlatform)
@@ -58,7 +59,7 @@ lazy val codecBloscZstd =
   crossProject(JSPlatform, JVMPlatform)
     .crossType(CrossType.Full)
     .in(file("codec-blosc-zstd"))
-    .dependsOn(core)
+    .dependsOn(core, interopRavel % "test->compile")
     .settings(commonSettings)
     .settings(
       name := "zarr4s-codec-blosc-zstd"
@@ -74,15 +75,32 @@ lazy val codecBloscZstd =
       scalaJSLinkerConfig ~= (_.withModuleKind(ModuleKind.ESModule))
     )
 
+lazy val interopRavel =
+  crossProject(JSPlatform, JVMPlatform)
+    .crossType(CrossType.Full)
+    .in(file("interop-ravel"))
+    .dependsOn(core % "compile->compile;test->test")
+    .settings(commonSettings)
+    .settings(
+      name := "zarr4s-interop-ravel",
+      libraryDependencies += "io.github.canardlapin" %%% "ravel-core" % ravelV,
+      // Ravel has not published an immutable release yet. Keep source builds usable with the
+      // local development snapshot or an explicit -Dravel.version, but do not publish that contract.
+      publish / skip := true
+    )
+    .jsSettings(jsSettingsBase)
+
 lazy val coreJS = core.js
 lazy val coreJVM = core.jvm
 lazy val codecBloscZstdJS = codecBloscZstd.js
 lazy val codecBloscZstdJVM = codecBloscZstd.jvm
+lazy val interopRavelJS = interopRavel.js
+lazy val interopRavelJVM = interopRavel.jvm
 
 lazy val docs =
   project
     .in(file("site"))
-    .dependsOn(coreJVM)
+    .dependsOn(coreJVM, interopRavelJVM)
     .enablePlugins(org.typelevel.sbt.TypelevelSitePlugin)
     .settings(
       name := "zarr4s-site",
@@ -113,6 +131,8 @@ docsBundle := {
   val apiDocs = Vector(
     "core/jvm" -> (coreJVM / Compile / doc).value,
     "core/js" -> (coreJS / Compile / doc).value,
+    "interop-ravel/jvm" -> (interopRavelJVM / Compile / doc).value,
+    "interop-ravel/js" -> (interopRavelJS / Compile / doc).value,
     "codec-blosc-zstd/jvm" -> (codecBloscZstdJVM / Compile / doc).value,
     "codec-blosc-zstd/js" -> (codecBloscZstdJS / Compile / doc).value
   )
@@ -131,11 +151,11 @@ docsBundle := {
 
 addCommandAlias(
   "compileAll",
-  ";coreJVM/compile;coreJS/compile;codecBloscZstdJVM/compile;codecBloscZstdJS/compile;benchmarks/compile"
+  ";coreJVM/compile;coreJS/compile;interopRavelJVM/compile;interopRavelJS/compile;codecBloscZstdJVM/compile;codecBloscZstdJS/compile;benchmarks/compile"
 )
 addCommandAlias(
   "testAll",
-  ";coreJVM/test;coreJS/test;codecBloscZstdJVM/test;codecBloscZstdJS/test;benchmarks/test"
+  ";coreJVM/test;coreJS/test;interopRavelJVM/test;interopRavelJS/test;codecBloscZstdJVM/test;codecBloscZstdJS/test;benchmarks/test"
 )
 addCommandAlias(
   "checkAll",
