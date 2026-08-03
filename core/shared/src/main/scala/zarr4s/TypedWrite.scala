@@ -14,6 +14,24 @@ object TypedChunkProvider:
   def from[D <: DType](dtype: D, provider: ChunkProvider): TypedChunkProvider[D] =
     new TypedChunkProvider(dtype, provider)
 
+/** User-controlled metadata for creating a group.
+  *
+  * Parsed unknown fields remain part of [[GroupMetadata]] and are intentionally absent here: a new
+  * group contains only the attributes and format selected by its creator.
+  */
+final case class GroupSpec(
+    attributes: JsonObject = JsonObject.empty,
+    format: ZarrFormat = ZarrFormat.V3
+):
+  def withAttributes(value: JsonObject): GroupSpec = copy(attributes = value)
+  def asFormat(value: ZarrFormat): GroupSpec = copy(format = value)
+
+/** High-level group creation result retaining complete or incomplete publication progress. */
+final case class GroupWriteResult(spec: GroupSpec, outcome: WriteOutcome):
+  def receipt: Option[WriteReceipt] = outcome match
+    case WriteOutcome.Complete(found)  => Some(found)
+    case WriteOutcome.Incomplete(_, _) => None
+
 /** The complete high-level creation result, including incomplete writer progress. */
 final case class TypedWriteResult[D <: DType](
     spec: ArraySpec[D],

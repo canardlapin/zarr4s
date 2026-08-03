@@ -11,11 +11,13 @@ The site is a separate sbt project in `site/`. Public sources live in
 are excluded from rendering.
 
 ```text
-sbt -batch docs/tlSite
+sbt -batch docsBundle
 ```
 
-The task runs mdoc against `coreJVM` and renders the processed Markdown with
-Laika. Generated output under `site/target/` is ignored.
+The task runs mdoc against `coreJVM`, renders the processed Markdown with
+Laika, generates JVM and Scala.js Scaladoc for both public modules, and copies
+those four API trees into the site artifact. Generated output under
+`site/target/` is ignored.
 
 For an interactive authoring loop:
 
@@ -46,22 +48,23 @@ sbt -J-Xmx4G checkAll
 ```
 
 `checkAll` checks formatting, compiles every module, runs JVM and Scala.js
-tests for core and the optional provider, and builds the guide.
+tests for core and the optional provider, and builds the complete documentation
+bundle.
 
-Generate API documentation separately:
+Generate one API tree during focused source work:
 
 ```text
 sbt coreJVM/doc coreJS/doc
 ```
 
-A green guide proves that JVM mdoc examples compile and evaluate and that
-Laika renders the site. It does not by itself prove Scala.js behavior,
-independent Zarr interoperability, a published Maven artifact, a hosted API
-reference, or a successful Pages deployment.
+A green documentation bundle proves that JVM mdoc examples compile and
+evaluate, Laika renders the guide, and all four Scaladoc trees compile. It does
+not by itself prove Scala.js runtime behavior, independent Zarr
+interoperability, a published Maven artifact, or a successful Pages deployment.
 
 ## Publication states
 
-The GitHub Pages workflow builds `docs/tlSite` and uploads
+The GitHub Pages workflow builds `docsBundle` and uploads
 `site/target/docs/site`. It is the only site publisher; no `gh-pages` branch is
 configured in the sbt build.
 

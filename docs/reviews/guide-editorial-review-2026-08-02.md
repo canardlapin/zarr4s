@@ -1,6 +1,6 @@
 # User-guide editorial review
 
-Date: 2026-08-02
+Date: 2026-08-03
 
 Scope: README, public guide, source tree, public API, JVM and Scala.js tests,
 standalone consumer, optional codec module, design and benchmark records,
@@ -36,7 +36,8 @@ the README, tests, or source.
 | Shared core targets JVM and Scala.js. | Confirmed | Cross-project build and corresponding test trees. |
 | JVM mdoc examples prove Scala.js behavior. | Rejected | The site depends on `coreJVM`; Scala.js requires its own suites. |
 | Common v2/v3, selection, codec, and sharding claims have executable repository evidence. | Confirmed within the recorded support matrix | Shared/platform suites and independent fixtures exist for the named surface. This review did not rerun every external oracle. |
-| A stable artifact and hosted API reference are available. | Unverified and currently contradicted by repository state | No release tag or stable coordinate is declared; the guide has no published Scaladoc route. |
+| A stable artifact is available. | Unverified and currently contradicted by repository state | No release tag or stable coordinate is declared. |
+| The guide and API reference are built as one deployable site. | Confirmed locally; publication pending | `docsBundle` builds the mdoc/Laika guide plus four module/platform Scaladoc trees and the site links them explicitly. |
 | Historical benchmark values are general performance guarantees. | Rejected | Benchmark records state their fixtures and non-claims. |
 
 ## Strengths to preserve
@@ -101,6 +102,9 @@ Use
 Advanced
   Choose a platform boundary
   Configure codecs and sharding
+  Choose chunk shapes
+  Decide whether to use shards
+  Tune remote reads and caches
   Control remote I/O with caches and limits
 Reference
   Supported formats and data
@@ -131,32 +135,33 @@ and add a convenience method whose success value can exist only after complete
 publication and successful reopen. Its single `Left` should retain a distinct
 error case carrying partial `WriteProgress` when publication began.
 
-### 2. Use one error vocabulary for store construction
+### 2. Finish using one error vocabulary for store construction
 
-`JvmFileStore.open`, `JvmHttpStore.apply`, and `FetchStore.apply` return
-`Either[String, Store]`, while operations return `StoreError` inside
-`ZarrError`. This prevents direct `for`-comprehension with `SyncZarr` and makes
-onboarding examples translate strings manually.
+`JvmFileStore.openChecked` now returns `Either[ZarrError, JvmFileStore]`, which
+keeps JVM path opening inside the ordinary typed workflow. The older
+`JvmFileStore.open`, `JvmHttpStore.apply`, and `FetchStore.apply` constructors
+still return `Either[String, Store]`.
 
 Recommendation: introduce a typed store-construction error or return
 `Either[ZarrError, Store]` consistently.
 
-### 3. Add JVM open façades beside JVM create façades
+### 3. JVM open façades beside JVM create façades — addressed
 
-`JvmZarr` accepts a `Path` for creation, but opening a path requires
-`JvmFileStore.open` followed by `SyncZarr.openTypedArray`.
+`JvmZarr` now exposes `openArray`, `openTypedArray`, `openGroup`, and `openNode`
+for `Path`. The methods validate the path through `JvmFileStore.openChecked`
+and delegate to the shared synchronous façade.
 
-Recommendation: add `JvmZarr.openArray`, `openTypedArray`, `openGroup`, and
-`openNode` overloads for `Path`. Keep the store APIs for callers that need
-reuse, caching, or custom composition.
+The store APIs remain available for callers that need reuse, caching, or custom
+composition.
 
-### 4. Make group creation part of the ordinary façade
+### 4. Group creation in the ordinary façade — addressed
 
-Typed array creation lives on `SyncZarr` and `AsyncZarr`; group creation lives
-on `SyncZarrWriter` and `AsyncZarrWriter` and requires raw `GroupMetadata`.
+Immutable `GroupSpec` and `GroupWriteResult` now give group creation the same
+format, attributes, path, limits, and outcome vocabulary as typed array
+creation. `SyncZarr`, `AsyncZarr`, and `JvmZarr` expose the operation directly;
+the advanced writers remain available.
 
-Recommendation: add immutable `GroupSpec` plus façade methods that share the
-same path, format, attributes, limits, and result vocabulary as arrays.
+This removes the documentation-only detour through raw `GroupMetadata`.
 
 ### 5. Open programmatic codec configuration to providers
 
@@ -194,14 +199,15 @@ revised guide would make the design and ordinary workflows understandable. The
 remaining documentation barriers to a polished, mature impression would be:
 
 1. no resolvable stable artifact and therefore no honest one-line installation;
-2. no published, linked Scaladoc reference;
+2. publication of the already linked guide and module/platform Scaladoc bundle;
 3. no versioned documentation or migration policy for a public release line;
 4. optional-provider authoring that cannot stay in the typed codec-spec API;
-5. group creation and JVM path opening that do not match the main façade; and
-6. no published benchmark methodology aimed at user choices such as chunk
-   shape, sharding, cache size, and representative remote selections.
+   and
+5. built-in codec parameters and attribute construction that do not yet share
+   one checked-constructor vocabulary.
 
-The first two are release-documentation blockers. The next three are API
-coherence issues that documentation can expose but should not disguise. The
-last is a maturity opportunity, not a prerequisite for honest 0.1
-documentation.
+The performance guide now provides a versioned, executable request-and-byte
+court for choosing chunks, shards, and revision caches, while stating that a
+real remote endpoint is still required for latency and throughput evidence.
+The first two remaining items are release-documentation blockers. The others
+are API-coherence issues that documentation can expose but should not disguise.

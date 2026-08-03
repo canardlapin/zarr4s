@@ -2,12 +2,28 @@ package zarr4s
 
 import java.nio.file.Path
 
-/** JVM filesystem facade for the typed create-only workflow.
+/** JVM filesystem facade for typed creation and opening.
   *
   * The blocking boundary is explicit in this JVM-only API. Publication delegates to the existing
   * staged [[JvmZarrWriter]] and therefore never exposes a partially published target as success.
   */
 object JvmZarr:
+  /** Create a group with staged atomic directory publication. */
+  def createGroup(
+      target: Path,
+      spec: GroupSpec = GroupSpec(),
+      limits: WriterLimits = WriterLimits()
+  ): GroupWriteResult =
+    GroupWriteResult(
+      spec,
+      JvmZarrWriter.createGroupOutcome(
+        target,
+        GroupMetadata(spec.attributes, JsonObject.empty),
+        limits,
+        spec.format
+      )
+    )
+
   def createArray[D <: DType](
       target: Path,
       spec: ArraySpec[D],
@@ -92,9 +108,9 @@ object JvmZarr:
           case WriteOutcome.Incomplete(_, error) =>
             TypedCreateAndOpen(result, Left(error))
           case WriteOutcome.Complete(_) =>
-            JvmFileStore.open(target) match
-              case Left(detail) =>
-                TypedCreateAndOpen(result, Left(ZarrError.WriteFailure(detail)))
+            JvmFileStore.openChecked(target) match
+              case Left(error) =>
+                TypedCreateAndOpen(result, Left(error))
               case Right(store) =>
                 TypedCreateAndOpen(
                   result,
@@ -106,3 +122,66 @@ object JvmZarr:
                     runtime = runtime
                   )
                 )
+
+  /** Open any Zarr node rooted at an existing filesystem directory. */
+  def openNode(
+      root: Path,
+      path: ZarrPath = ZarrPath.root,
+      capabilities: ZarrCapabilities = ZarrCapabilities(),
+      limits: OpenLimits = OpenLimits(),
+      runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+  ): Either[ZarrError, OpenedNode] =
+    withStore(root): store =>
+      SyncZarr.openNode(
+        store,
+        path,
+        capabilities,
+        limits,
+        runtime,
+        consolidation,
+        Some(store)
+      )
+
+  /** Open an array rooted at an existing filesystem directory. */
+  def openArray(
+      root: Path,
+      path: ZarrPath = ZarrPath.root,
+      capabilities: ZarrCapabilities = ZarrCapabilities(),
+      limits: OpenLimits = OpenLimits(),
+      runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+  ): Either[ZarrError, OpenedArray] =
+    openNode(root, path, capabilities, limits, runtime, consolidation).flatMap:
+      case OpenedNode.Array(found) => Right(found)
+      case OpenedNode.Group(_)     => Left(ZarrError.UnsupportedNodeType("group"))
+
+  /** Open an array and verify its dtype at the filesystem boundary. */
+  def openTypedArray[D <: DType](
+      root: Path,
+      dtype: D,
+      path: ZarrPath = ZarrPath.root,
+      capabilities: ZarrCapabilities = ZarrCapabilities(),
+      limits: OpenLimits = OpenLimits(),
+      runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+  ): Either[ZarrError, TypedOpenedArray[D]] =
+    openArray(root, path, capabilities, limits, runtime, consolidation).flatMap(_.asTyped(dtype))
+
+  /** Open a group rooted at an existing filesystem directory. */
+  def openGroup(
+      root: Path,
+      path: ZarrPath = ZarrPath.root,
+      capabilities: ZarrCapabilities = ZarrCapabilities(),
+      limits: OpenLimits = OpenLimits(),
+      runtime: SyncCodecRuntime = JvmCodecRuntime.portable,
+      consolidation: ConsolidationMode = ConsolidationMode.Prefer
+  ): Either[ZarrError, OpenedGroup] =
+    openNode(root, path, capabilities, limits, runtime, consolidation).flatMap:
+      case OpenedNode.Group(found) => Right(found)
+      case OpenedNode.Array(_)     => Left(ZarrError.UnsupportedNodeType("array"))
+
+  private def withStore[A](root: Path)(
+      use: JvmFileStore => Either[ZarrError, A]
+  ): Either[ZarrError, A] =
+    JvmFileStore.openChecked(root).flatMap(use)

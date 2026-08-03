@@ -41,8 +41,8 @@ Start with:
 - **Learn** explains arrays, chunks, typed values, validation, and ownership.
 - **Use** follows complete tasks: opening, selecting, writing, and navigating
   groups.
-- **Advanced** introduces platform boundaries, codecs, sharding, caches, and
-  limits only after the basic workflow is familiar.
+- **Advanced** uses checked workload evidence to choose chunks, sharding,
+  caches, and remote-store policy only after the basic workflow is familiar.
 - **Reference** states the supported Zarr surface and maps tasks to public API.
 - **Help** begins with observable failures and concrete remedies.
 

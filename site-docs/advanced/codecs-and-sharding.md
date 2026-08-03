@@ -112,4 +112,4 @@ closed `ArrayCodecSpec` hierarchy.
 | Add transpose | Preserved after decode. | Logical shape preserved; encoded order changes. | Array stage changes. | Built-in array codec support. |
 | Add indexed sharding | Preserved. | Adds inner chunks within outer shards. | Object layout and index change. | Sharding and index codecs. |
 
-Next: [control remote I/O with caches and limits](cache-and-limits.md).
+Next: [choose chunk shapes from measured workloads](choosing-chunks.md).

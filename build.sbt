@@ -7,6 +7,8 @@ import scalajscrossproject.ScalaJSCrossPlugin.autoImport.*
 val Scala3 = "3.7.4"
 val munitV = "1.2.1"
 
+lazy val docsBundle = taskKey[File]("Build the guide and bundled per-platform API reference")
+
 ThisBuild / tlBaseVersion := "0.1"
 ThisBuild / organization := "io.github.canardlapin"
 ThisBuild / organizationName := "Bradley Buchsbaum"
@@ -40,7 +42,7 @@ lazy val jsSettingsBase = Seq(
 )
 
 lazy val root = tlCrossRootProject
-  .aggregate(core, codecBloscZstd)
+  .aggregate(core, codecBloscZstd, benchmarks)
 
 lazy val core =
   crossProject(JSPlatform, JVMPlatform)
@@ -87,21 +89,58 @@ lazy val docs =
       publish / skip := true,
       mdocIn := (ThisBuild / baseDirectory).value / "site-docs",
       mdocExtraArguments += "--clean-target",
+      tlSiteApiUrl := Some(
+        url("https://canardlapin.github.io/zarr4s/reference/api-map.html")
+      ),
       tlSitePublishBranch := None,
       tlSitePublishTags := false
     )
 
+lazy val benchmarks =
+  project
+    .in(file("benchmarks"))
+    .dependsOn(coreJVM)
+    .settings(commonSettings)
+    .settings(
+      name := "zarr4s-benchmarks",
+      publish / skip := true,
+      Test / unmanagedResourceDirectories +=
+        (ThisBuild / baseDirectory).value / "site-docs"
+    )
+
+docsBundle := {
+  (docs / tlSite).value
+  val apiDocs = Vector(
+    "core/jvm" -> (coreJVM / Compile / doc).value,
+    "core/js" -> (coreJS / Compile / doc).value,
+    "codec-blosc-zstd/jvm" -> (codecBloscZstdJVM / Compile / doc).value,
+    "codec-blosc-zstd/js" -> (codecBloscZstdJS / Compile / doc).value
+  )
+  val siteRoot = (docs / target).value / "docs" / "site"
+  apiDocs.foreach { case (relative, source) =>
+    val sourceIndex = source / "index.html"
+    if (!sourceIndex.isFile) {
+      throw new MessageOnlyException(s"missing Scaladoc index: $sourceIndex")
+    }
+    val destination = siteRoot / "api" / relative
+    IO.delete(destination)
+    IO.copyDirectory(source, destination)
+  }
+  siteRoot
+}
+
 addCommandAlias(
   "compileAll",
-  ";coreJVM/compile;coreJS/compile;codecBloscZstdJVM/compile;codecBloscZstdJS/compile"
+  ";coreJVM/compile;coreJS/compile;codecBloscZstdJVM/compile;codecBloscZstdJS/compile;benchmarks/compile"
 )
 addCommandAlias(
   "testAll",
-  ";coreJVM/test;coreJS/test;codecBloscZstdJVM/test;codecBloscZstdJS/test"
+  ";coreJVM/test;coreJS/test;codecBloscZstdJVM/test;codecBloscZstdJS/test;benchmarks/test"
 )
 addCommandAlias(
   "checkAll",
-  ";scalafmtCheckAll;scalafmtSbtCheck;compileAll;testAll;docs/tlSite"
+  ";scalafmtCheckAll;scalafmtSbtCheck;compileAll;testAll;docsBundle"
 )
 
-addCommandAlias("docsCheck", ";docs/tlSite")
+addCommandAlias("docsCheck", ";docsBundle")
+addCommandAlias("performanceCheck", ";benchmarks/test")

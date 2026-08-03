@@ -148,3 +148,7 @@ object JvmFileStore:
       if !Files.isDirectory(real) then Left(s"store root is not a directory: $real")
       else Right(new JvmFileStore(real))
     catch case NonFatal(error) => Left(error.getMessage)
+
+  /** Open a filesystem store through the library's typed error channel. */
+  def openChecked(root: Path): Either[ZarrError, JvmFileStore] =
+    open(root).left.map(detail => ZarrError.StoreFailure(StoreError.InvalidRoot(detail)))

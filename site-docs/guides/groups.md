@@ -4,8 +4,9 @@ A Zarr group gives related arrays and groups stable paths in one store. Open a
 known child directly when its path is known. Ask for `children` only when the
 store has consolidated metadata or a listing capability.
 
-The current typed façade creates arrays but not groups, so group creation uses
-the lower-level writer:
+Create a group through the same façade used for arrays. `GroupSpec` contains
+only metadata a creator can choose; parser-only unknown fields do not leak into
+the creation API.
 
 ```scala mdoc:silent
 import zarr4s.*
@@ -14,11 +15,8 @@ def checked[A](value: Either[ZarrError, A]): A =
   value.fold(error => throw IllegalArgumentException(error.message), identity)
 
 val store = checked(MemoryStore.empty)
-val groupOutcome = SyncZarrWriter.createGroup(
-  store,
-  GroupMetadata(JsonObject.empty, JsonObject.empty)
-)
-val _ = checked(groupOutcome.toEither)
+val groupWrite = SyncZarr.createGroup(store, GroupSpec())
+val _ = checked(groupWrite.outcome.toEither)
 
 val shape = checked(Shape(4L, 6L))
 val chunks = checked(Shape(2L, 3L))
@@ -69,8 +67,8 @@ or `AsyncObjectLister`.
 | `openArray("child")` | Not materialized. | Resolves below the opened group. | Requires the child to be an array. | Same as `open`. |
 | `children` | No array values. | Returns immediate child paths. | Returns kind and format. | Consolidated index or listing capability. |
 
-The lack of a typed `createGroup` companion to `SyncZarr.createArray` is an API
-gap exposed by this workflow. A newcomer would expect group creation and array
-creation to share the same façade, attribute builder, and result vocabulary.
+Use `AsyncZarr.createGroup` with an `AsyncObjectWriter`. On the JVM,
+`JvmZarr.createGroup(path, spec)` stages the complete group directory and
+publishes it with the same atomic move used for filesystem arrays.
 
 Next: [choose the synchronous, asynchronous, or browser boundary](../advanced/platforms.md).

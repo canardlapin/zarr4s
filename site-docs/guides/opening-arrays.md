@@ -39,26 +39,23 @@ application has selected a supported witness.
 
 ## Open a filesystem store on the JVM
 
-`JvmFileStore.open` expects an existing directory containing the Zarr root.
-It provides reading, create-only writing, and bounded listing.
+`JvmZarr` accepts an existing directory containing the Zarr root. It opens the
+filesystem store, supplies its bounded listing capability for group discovery,
+and returns errors through `ZarrError`.
 
 ```scala mdoc:compile-only
 import java.nio.file.Path
 import zarr4s.*
 
-val openedFromDisk: Either[String, TypedOpenedArray[DType.Int16.type]] =
-  for
-    fileStore <- JvmFileStore.open(Path.of("data/measurements.zarr"))
-    array <- SyncZarr
-      .openTypedArray(fileStore, DType.Int16)
-      .left
-      .map(_.message)
-  yield array
+val openedFromDisk: Either[ZarrError, TypedOpenedArray[DType.Int16.type]] =
+  JvmZarr.openTypedArray(Path.of("data/measurements.zarr"), DType.Int16)
 ```
 
-The store refuses keys and symlinks that escape its root. The call is
-synchronous and may block; place it on an execution boundary appropriate for
-your application.
+Use `JvmZarr.openNode`, `openArray`, or `openGroup` when the expected node kind
+differs. The underlying store refuses keys and symlinks that escape its root.
+These calls are synchronous and may block; place them on an execution boundary
+appropriate for your application. `JvmFileStore.openChecked` remains available
+when an application needs the store as an explicit capability.
 
 ## Open an HTTP store on the JVM
 
