@@ -302,8 +302,9 @@ through `ZarrError` instead of being guessed at. Descending slices are rejected.
 
 ## Documentation map
 
-- [User guide](https://canardlapin.github.io/zarr4s/) — getting started,
-  concepts, and task-oriented reading examples.
+- [User guide](https://canardlapin.github.io/zarr4s/) — installation status,
+  the typed model, complete read/write/group workflows, platform and codec
+  choices, support reference, and troubleshooting.
 - [Standalone consumer](examples/standalone-consumer/) — compile and run a
   public-artifact JVM/Scala.js consumer.
 - [Design and verification records](docs/README.md) — current guarantees,

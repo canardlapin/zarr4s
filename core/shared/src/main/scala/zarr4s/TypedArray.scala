@@ -2,7 +2,7 @@ package zarr4s
 
 /** A statically named Zarr data type whose element representation is known to Scala.
   *
-  * The type member is intentional: [[DType.Int16.type]] and [[DType.UInt16.type]] remain distinct
+  * The type member is intentional: `DType.Int16.type` and `DType.UInt16.type` remain distinct
   * type-level witnesses even though both use a compact `Short` array for storage. Custom data types
   * continue to use [[DataTypeCapability]] and the advanced descriptor API until they can provide an
   * honest typed representation.
