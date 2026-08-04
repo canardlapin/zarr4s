@@ -13,6 +13,7 @@ Shared symbols appear in both platform trees; adapters such as `JvmZarr` and
 | Module | JVM | Scala.js |
 | --- | --- | --- |
 | Core arrays, stores, readers, and writers | [JVM Scaladoc](https://canardlapin.github.io/zarr4s/api/core/jvm/) | [Scala.js Scaladoc](https://canardlapin.github.io/zarr4s/api/core/js/) |
+| Optional Ravel NDArray interoperability | [JVM Scaladoc](https://canardlapin.github.io/zarr4s/api/interop-ravel/jvm/) | [Scala.js Scaladoc](https://canardlapin.github.io/zarr4s/api/interop-ravel/js/) |
 | Optional Blosc and Zstandard provider | [JVM Scaladoc](https://canardlapin.github.io/zarr4s/api/codec-blosc-zstd/jvm/) | [Scala.js Scaladoc](https://canardlapin.github.io/zarr4s/api/codec-blosc-zstd/js/) |
 
 ## Create and own values
@@ -42,6 +43,11 @@ Shared symbols appear in both platform trees; adapters such as `JvmZarr` and
 Typed reads return `TypedReadResult[D]`, which contains owned `DenseArray[D]`
 data and an `ExecutionReceipt`.
 
+For an exact Ravel dtype, import `zarr4s.ravel.*` and use
+`readAllNDArray`, `readRegionNDArray`, `readPointsNDArray`, or `readNDArray`.
+The asynchronous names add `Async`. These calls return an owned Ravel array
+with the same `ExecutionReceipt`.
+
 ## Create arrays and groups
 
 | Task | Entry point | Important contract |
@@ -52,6 +58,7 @@ data and an `ExecutionReceipt`.
 | Stream chunks | `createArrayFromProvider` | Requires a `TypedChunkProvider[D]`. |
 | Publish a new JVM directory | `JvmZarr.createArray` or `createAndOpenArray` | Staged filesystem publication to a `Path`. |
 | Create a group | `SyncZarr.createGroup`, `AsyncZarr.createGroup`, `JvmZarr.createGroup` | Uses `GroupSpec` and retains complete or incomplete progress. |
+| Create from an immutable Ravel array | `RavelZarr.createArray`, `AsyncRavelZarr.createArray` | `fromCanonical` retains the source owner; `copyOf` explicitly materializes a view. |
 
 `TypedWriteResult[D]` contains the specification, compiled descriptor, and
 `WriteOutcome`. `WriteOutcome.Complete` contains a `WriteReceipt`;
@@ -81,5 +88,8 @@ The source for these contracts remains available in
 [`core`](https://github.com/canardlapin/zarr4s/tree/main/core). The
 [`standalone consumer`](https://github.com/canardlapin/zarr4s/tree/main/examples/standalone-consumer)
 checks the ordinary public imports independently of the generated reference.
+The separate
+[`Ravel consumer`](https://github.com/canardlapin/zarr4s/tree/main/examples/ravel-standalone-consumer)
+checks the optional adapter against commit-labelled published artifacts.
 
 Next: [diagnose common failures](../help/troubleshooting.md).

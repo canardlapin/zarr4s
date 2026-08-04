@@ -20,6 +20,19 @@ formats also have independent fixture or readback evidence where applicable.
 The executable site examples run against `coreJVM`. The repository's JVM and
 Scala.js suites, not the site build alone, establish cross-platform coverage.
 
+## Optional Ravel arrays
+
+`zarr4s-interop-ravel` provides first-party optional support for immutable
+Ravel NDArrays on the JVM and Scala.js. It maps `bool`, signed 8/16/32/64-bit
+integers, unsigned 8/16-bit integers, and 32/64-bit floating values exactly.
+Other zarr4s dtypes remain unsupported at this boundary rather than being
+widened. Zarr dimensions and total element counts must fit Ravel's `Int`
+shape model.
+
+The adapter is tested but not published because Ravel has no immutable release.
+See [use zarr4s with Ravel arrays](../guides/ravel-interop.md) for the ownership,
+selection, write, and local-consumer contract.
+
 ## Zarr formats
 
 | Area | Supported in 0.1 |

@@ -1,6 +1,8 @@
 package zarr4s.codec.blosc
 
+import _root_.ravel.{NDArray, Shape as RavelShape}
 import zarr4s.*
+import zarr4s.ravel.*
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -134,6 +136,38 @@ class BrowserBloscZstdSuite extends munit.FunSuite:
                           assertEquals(values.toArray.toVector, BloscPythonFixtures.directValues)
                         case _ => fail("expected int16 result")
 
+  test("installed Scala.js Blosc runtime round-trips a canonical Ravel source"):
+    val values = BloscPythonFixtures.directValues
+    val array = NDArray.fromSeq(RavelShape(2, 3), values)
+    val source = rvalue(RavelArraySource.fromCanonical(DType.Float32, array))
+    val descriptor = zvalue(BloscPythonFixtures.descriptor(BloscPythonFixtures.directMetadata))
+    val provider = rvalue(source.typedProvider(descriptor))
+    val store = zvalue(AsyncMemoryStore(Map.empty))
+    AsyncZarrWriter
+      .create(
+        store,
+        descriptor,
+        AsyncChunkProvider.fromSync(provider.underlying),
+        runtime = BrowserBloscZstdRuntime.portable,
+        format = ZarrFormat.V2
+      )
+      .flatMap:
+        case WriteOutcome.Incomplete(_, error) => fail(error.message)
+        case WriteOutcome.Complete(_)          =>
+          AsyncZarr
+            .openTypedArray(
+              store,
+              DType.Float32,
+              capabilities = BloscZstdProvider.capabilities(),
+              runtime = BrowserBloscZstdRuntime.portable
+            )
+            .flatMap:
+              case Left(error)   => fail(error.message)
+              case Right(opened) => opened.readAllNDArrayAsync()
+      .map:
+        case Left(error)   => fail(error.message)
+        case Right(result) => assert(result.data.sameElementsBits(array))
+
   private def zcodec(
       level: Int,
       shuffle: BloscShuffle,
@@ -175,6 +209,10 @@ class BrowserBloscZstdSuite extends munit.FunSuite:
                   case _                              => fail("expected float32 result")
 
   private def zvalue[A](value: Either[ZarrError, A]): A = value match
+    case Right(found) => found
+    case Left(error)  => fail(error.message)
+
+  private def rvalue[A](value: Either[RavelInteropError, A]): A = value match
     case Right(found) => found
     case Left(error)  => fail(error.message)
 

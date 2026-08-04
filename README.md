@@ -14,6 +14,11 @@ runtime and cross-compiles to both platforms; JVM filesystem/HTTP transports,
 browser Fetch, and optional codecs live at explicit platform or provider
 boundaries.
 
+The optional `zarr4s-interop-ravel` module reads exact supported dtypes into
+owned Ravel NDArrays and creates arrays from immutable canonical Ravel storage.
+It remains unpublished until Ravel has an immutable release; it is not a
+ScalaFIM-specific layer.
+
 > **Status:** 0.1 pre-release. No stable release artifact is published yet;
 > use a checkout or the local publication path in the standalone-consumer
 > example.
@@ -307,6 +312,9 @@ through `ZarrError` instead of being guessed at. Descending slices are rejected.
   choices, support reference, and troubleshooting.
 - [Standalone consumer](examples/standalone-consumer/) — compile and run a
   public-artifact JVM/Scala.js consumer.
+- [Ravel adapter consumer](examples/ravel-standalone-consumer/) — read,
+  transform, and create Float32 arrays through commit-labelled JVM/Scala.js
+  artifacts without sibling source dependencies.
 - [Design and verification records](docs/README.md) — current guarantees,
   support decisions, and historical measurements.
 - [Common Zarr support](docs/plans/zarr-z9-common-zarr-support.md) — supported
